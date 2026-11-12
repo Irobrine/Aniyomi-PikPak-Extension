@@ -1,6 +1,6 @@
 # Aniyomi PikPak Extension
 
-A direct [PikPak](https://mypikpak.com) extension for [Anikku](https://github.com/komikku-app/anikku) and Aniyomi-based apps.
+A direct PikPak extension for Aniyomi-based apps.
 It lists your PikPak cloud drive as an anime catalog and streams episodes straight from PikPak — no
 StremThru, Real-Debrid or other intermediary service.
 
