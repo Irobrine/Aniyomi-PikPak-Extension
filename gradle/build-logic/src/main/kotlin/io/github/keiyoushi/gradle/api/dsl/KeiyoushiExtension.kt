@@ -14,6 +14,7 @@ abstract class KeiyoushiExtension @Inject constructor(
     abstract val name: Property<String>
     abstract val className: Property<String>
     abstract val versionCode: Property<Int>
+    abstract val versionName: Property<String>
     abstract val contentWarning: Property<ContentWarning>
     abstract val theme: Property<String>
     abstract val libVersion: Property<String>

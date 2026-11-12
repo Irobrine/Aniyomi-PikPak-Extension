@@ -135,12 +135,14 @@ class ExtensionPlugin : Plugin<Project> {
             themeKeiyoushi.baseVersionCode.zip(keiyoushi.versionCode) { base, ext -> base + ext }
         }.orElse(keiyoushi.versionCode)
 
-        val versionNameProvider = keiyoushi.libVersion.flatMap { libVersion ->
-            check(libVersion in VALID_LIB_VERSIONS) {
-                "libVersion $libVersion is not supported. Supported versions: $VALID_LIB_VERSIONS"
-            }
-            versionCodeProvider.map { "$libVersion.$it" }
-        }
+        val versionNameProvider = keiyoushi.versionName.orElse(
+            keiyoushi.libVersion.flatMap { libVersion ->
+                check(libVersion in VALID_LIB_VERSIONS) {
+                    "libVersion $libVersion is not supported. Supported versions: $VALID_LIB_VERSIONS"
+                }
+                versionCodeProvider.map { "$libVersion.$it" }
+            },
+        )
 
         // A legacy className loads a hand-written class, such as a factory; its source { } blocks are then metadata only
         val classNameProvider = keiyoushi.className.map { name ->
