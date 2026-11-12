@@ -54,15 +54,25 @@ Open the APK on your device and install it, then enable the **PikPak** source in
 
 ### Account
 
-Enter `email:password` in **Extensions → PikPak → PikPak account**.
+Enter `email:password` in **Extensions → PikPak → PikPak account**. This is used when no session
+token is available.
 
-The extension signs in through PikPak's web client. PikPak rate-limits repeated password logins
-(`Your operation is too frequent`); when that happens, wait a while before trying again.
+PikPak rate-limits repeated password logins (`Your operation is too frequent`); when that happens,
+wait a while before trying again.
 
-### Refresh token (recommended when logins are rate-limited)
+### Log in with PikPak (recommended)
+
+**PikPak → Log in with PikPak (web)** opens PikPak's own login page inside the app. Sign in there as
+you would on the website; the extension imports the session's refresh token when login completes and
+closes the page.
+
+Because that web page is destroyed after the import, nothing else rotates the token: the extension
+refreshes and stores it on its own from then on, so the login is a one-time step.
+
+### Manual refresh token (fallback)
 
 PikPak refresh tokens are single-use and rotate on every exchange, so the extension saves the rotated
-token after first use.
+token after first use. Use this only if the web login cannot be used:
 
 1. Log in at [mypikpak.com](https://mypikpak.com).
 2. Open the browser dev tools (`F12`) → **Application** → **Local Storage** → `https://mypikpak.com`.
@@ -70,6 +80,8 @@ token after first use.
 4. Close the tab **without logging out** — an open web app refreshes and rotates the token in the
    background, invalidating the copy.
 5. Paste it into **PikPak refresh token (optional)**.
+
+If a saved token is rejected, the extension discards it and tries the account login instead.
 
 Quota: the extension only reads your drive and generates playback links; it never uploads or deletes.
 
