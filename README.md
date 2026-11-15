@@ -24,7 +24,7 @@ StremThru, Real-Debrid or other intermediary service.
 
 ## Requirements
 
-- Anikku, or an Aniyomi build that supports extensions-lib **16**.
+- Aniyomi build that supports extensions-lib **16**.
 - A PikPak account with the files already in `My Pack` (or in an extra folder you add).
 - This extension is not part of a repository index yet, so install the APK manually.
 
