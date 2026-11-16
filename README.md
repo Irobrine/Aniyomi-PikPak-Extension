@@ -6,6 +6,10 @@ StremThru, Real-Debrid or other intermediary service.
 
 [![Build](https://github.com/Irobrine/Aniyomi-PikPak-Extension/actions/workflows/build.yml/badge.svg)](https://github.com/Irobrine/Aniyomi-PikPak-Extension/actions/workflows/build.yml)
 
+> **Built on [Yuzono's anime-extensions](https://github.com/yuzono/anime-extensions)** — the Gradle
+> setup, module layout and shared helpers this extension is developed with. Thanks to its authors and
+> contributors.
+
 ## Features
 
 - **Direct PikPak API** — log in once through PikPak's own web page and browse `My Pack`, including
@@ -191,8 +195,11 @@ affects users. `versionName` is generated as `<libVersion>.<versionCode>`.
 
 ## Credits
 
-- Built on the [Yuzono anime extensions](https://github.com/yuzono/anime-extensions) Gradle setup and
-  the [Aniyomi extensions-lib](https://github.com/komikku-app/aniyomi-extensions-lib).
+- This extension is built on [Yuzono's anime-extensions](https://github.com/yuzono/anime-extensions)
+  — its Gradle build setup, module layout, shared helpers and extension template. Many thanks to the
+  Yuzono authors and contributors.
+- Extension API from the
+  [Aniyomi extensions-lib](https://github.com/komikku-app/aniyomi-extensions-lib).
 - Metadata from [AniList](https://anilist.co) and [TMDB](https://www.themoviedb.org).
 - PikPak is a trademark of its respective owner; this project is not affiliated with PikPak.
 
