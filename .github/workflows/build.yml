@@ -35,6 +35,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
+      - name: Verify formatting
+        run: ./gradlew :src:all:pikpak:spotlessCheck --console=plain
+
+      - name: Run unit tests
+        run: ./gradlew :src:all:pikpak:testDebugUnitTest --console=plain
+
       - name: Build debug APK
         run: ./gradlew :src:all:pikpak:assembleDebug --console=plain
 

@@ -22,6 +22,21 @@ data class AniListResponse(
 )
 
 @Serializable
+data class AniListPageResponse(
+    val data: AniListPageData? = null,
+)
+
+@Serializable
+data class AniListPageData(
+    val Page: AniListPage? = null,
+)
+
+@Serializable
+data class AniListPage(
+    val media: List<AniListMedia>? = null,
+)
+
+@Serializable
 data class AniListData(
     val Media: AniListMedia? = null,
 )
@@ -40,12 +55,24 @@ data class AniListMedia(
     val episodes: Int? = null,
     val duration: Int? = null,
     val format: String? = null,
+    val popularity: Int? = null,
+    val averageScore: Int? = null,
+    val isAdult: Boolean? = null,
+    val synonyms: List<String>? = null,
+    val startDate: AniListFuzzyDate? = null,
     val studios: AniListStudios? = null,
     val characters: AniListCharacters? = null,
     val recommendations: AniListRecommendations? = null,
     val relations: AniListRelations? = null,
     val airingSchedule: AniListAiringSchedule? = null,
     val streamingEpisodes: List<AniListStreamingEpisode>? = null,
+)
+
+@Serializable
+data class AniListFuzzyDate(
+    val year: Int? = null,
+    val month: Int? = null,
+    val day: Int? = null,
 )
 
 @Serializable
@@ -148,10 +175,15 @@ data class TmdbSearchResult(
     @SerialName("media_type") val mediaType: String? = null,
     val title: String? = null,
     val name: String? = null,
-    @SerialName("poster_path") val posterPath: String? = null,
-    @SerialName("backdrop_path") val backdropPath: String? = null,
+    @SerialName("original_title") val originalTitle: String? = null,
+    @SerialName("original_name") val originalName: String? = null,
     @SerialName("release_date") val releaseDate: String? = null,
     @SerialName("first_air_date") val firstAirDate: String? = null,
+    @SerialName("poster_path") val posterPath: String? = null,
+    @SerialName("backdrop_path") val backdropPath: String? = null,
+    val overview: String? = null,
+    val popularity: Double? = null,
+    val adult: Boolean? = null,
 )
 
 @Serializable
@@ -159,6 +191,8 @@ data class TmdbDetails(
     val id: Int = 0,
     val title: String? = null,
     val name: String? = null,
+    @SerialName("original_title") val originalTitle: String? = null,
+    @SerialName("original_name") val originalName: String? = null,
     val overview: String? = null,
     val genres: List<TmdbName>? = null,
     @SerialName("poster_path") val posterPath: String? = null,
@@ -188,7 +222,6 @@ data class TmdbCredits(
 data class TmdbCast(
     val name: String? = null,
     val character: String? = null,
-    @SerialName("profile_path") val profilePath: String? = null,
 )
 
 @Serializable
@@ -200,7 +233,6 @@ data class TmdbResults(
 data class TmdbSeason(
     @SerialName("season_number") val seasonNumber: Int? = null,
     val name: String? = null,
-    @SerialName("episode_count") val episodeCount: Int? = null,
 )
 
 @Serializable
@@ -217,6 +249,5 @@ data class TmdbSeasonDetails(
 data class TmdbEpisode(
     @SerialName("episode_number") val episodeNumber: Int? = null,
     val name: String? = null,
-    val overview: String? = null,
     @SerialName("air_date") val airDate: String? = null,
 )

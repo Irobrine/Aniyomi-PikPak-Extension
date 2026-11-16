@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="pikpak_login_title">Log in with PikPak (web)</string>
+    <string name="pikpak_login_summary">Tap here to open PikPak\'s website and import the session automatically.</string>
+    <string name="pikpak_login_summary_logged_in">Logged in. Tap here to replace the saved PikPak session.</string>
+    <string name="pikpak_logout_title">Log out of PikPak</string>
+    <string name="pikpak_logout_summary">Forget the saved session and sign out of the PikPak page. Your files are not touched.</string>
+    <string name="pikpak_status_title">Session</string>
+    <string name="pikpak_status_logged_out">Not logged in.</string>
+    <string name="pikpak_status_logged_in">Logged in.</string>
+    <string name="pikpak_status_expires">Logged in. The session refreshes automatically (valid for %1$s).</string>
+    <string name="pikpak_status_expired">Logged in. The access token is being refreshed.</string>
+
+    <string name="pikpak_info_folder_title">Folder structure</string>
+    <string name="pikpak_info_folder_summary">Each folder directly inside My Pack is one anime. Season, part, cour, special and series sub-folders become seasons; disc, quality and subtitle folders are ignored. A folder without season folders shows its episodes directly.</string>
+    <string name="pikpak_info_season_title">Season folders</string>
+    <string name="pikpak_info_season_summary">Use names like \"Season 1\", \"S01\", \"第2季\" or \"Temporada 2\" to get \"Anime S01\". Parts and cours are kept, and labels such as \"Dear Sister\" become \"Anime Dear Sister\". Disc and release-group folders do not create seasons.</string>
+    <string name="pikpak_info_episode_title">Episode files</string>
+    <string name="pikpak_info_episode_summary">Numbers in S01E01, 1x01, EP01, E09, \"- 09\", [09], 第01话 and \"Episode 9\" are detected, including ranges and decimals. Years, resolutions, codecs, bit depths and audio channels are ignored. Files without a number are numbered in name order.</string>
+    <string name="pikpak_info_metadata_title">Metadata</string>
+    <string name="pikpak_info_metadata_summary">Anime folder names are matched against AniList for cover, studio, characters, recommendations and related entries. Add a TMDB API key for non-anime movies and TV.</string>
+
+    <string name="pikpak_torrents_title">Show torrent downloads</string>
+    <string name="pikpak_torrents_summary">Items in My Pack that were added from magnet links.</string>
+    <string name="pikpak_downloads_title">Show web downloads</string>
+    <string name="pikpak_downloads_summary">Files in My Pack that were not added from magnet links.</string>
+
+    <string name="pikpak_extra_folders_title">Extra folders</string>
+    <string name="pikpak_extra_folders_summary">Anime folders inside these are listed at the top of the catalog. One folder ID or path per line. Example:\nMy Shared/Anime</string>
+    <string name="pikpak_extra_folders_check_title">Check extra folders</string>
+    <string name="pikpak_extra_folders_check_summary">Resolve the configured folders and report how many anime each one contains.</string>
+    <string name="pikpak_extra_folders_none">No extra folders are configured.</string>
+    <string name="pikpak_extra_folders_checking">Checking extra folders…</string>
+    <string name="pikpak_extra_folders_report">%1$s: %2$d anime</string>
+    <string name="pikpak_extra_folders_missing">%1$s: not found</string>
+
+    <string name="pikpak_metadata_title">Fetch anime metadata</string>
+    <string name="pikpak_metadata_summary">Use AniList for covers, studio, characters and suggestions. TMDB is used as fallback.</string>
+    <string name="pikpak_tmdb_title">TMDB API key (optional)</string>
+    <string name="pikpak_tmdb_summary">Used when AniList has no match, especially for movies and TV shows.</string>
+
+    <string name="pikpak_flat_folders_title">Detect flat folders</string>
+    <string name="pikpak_flat_folders_summary">Probe each folder so a folder without sub-folders opens straight into episodes. Costs one request per folder when the catalog loads.</string>
+
+    <string name="pikpak_quality_title">Preferred resolution</string>
+    <string name="pikpak_quality_summary">Only this resolution is offered for playback and downloads. When it is missing, the closest higher resolution is used, then lower ones.</string>
+    <string name="pikpak_quality_auto">Automatic (all streams)</string>
+    <string name="pikpak_quality_origin">Original</string>
+
+    <string name="pikpak_toast_login_failed">Could not open the PikPak login.</string>
+    <string name="pikpak_toast_login_imported">PikPak login imported</string>
+    <string name="pikpak_toast_login_waiting">Still waiting for the PikPak session. Finish signing in on the page.</string>
+    <string name="pikpak_toast_logged_out">Logged out of PikPak</string>
+    <string name="pikpak_desc_extra_folder">PikPak extra folder</string>
+    <string name="pikpak_desc_torrent">PikPak torrent</string>
+    <string name="pikpak_desc_file">PikPak file</string>
+    <string name="pikpak_desc_series">Series</string>
+    <string name="pikpak_desc_season">Season</string>
+    <string name="pikpak_desc_episode">Episode</string>
+    <string name="pikpak_desc_movie">Movie</string>
+    <string name="pikpak_desc_special">Special</string>
+    <string name="pikpak_desc_ova">OVA</string>
+    <string name="pikpak_desc_ona">ONA</string>
+    <string name="pikpak_desc_short">Short</string>
+    <string name="pikpak_desc_other">Other</string>
+
+    <string name="pikpak_error_not_logged_in">PikPak is not logged in%1$s. Use \"Log in with PikPak (web)\" in the extension settings.</string>
+    <string name="pikpak_error_session_rejected">PikPak rejected the saved session%1$s. Log in again with \"Log in with PikPak (web)\" in the extension settings.</string>
+    <string name="pikpak_error_my_pack_missing">PikPak \'My Pack\' folder not found.</string>
+    <string name="pikpak_error_my_pack">Could not list PikPak My Pack: %1$s</string>
+    <string name="pikpak_error_item">Could not list PikPak item: %1$s</string>
+    <string name="pikpak_error_stream">Could not generate a PikPak playback link: %1$s</string>
+    <string name="pikpak_error_no_link">PikPak did not return a playback link for this file.</string>
+    <string name="pikpak_error_older_episodes">This episode list is from an older version. Refresh the anime.</string>
+    <string name="pikpak_error_list">PikPak list error: %1$s</string>
+    <string name="pikpak_error_file_http">PikPak get file HTTP %1$d: %2$s</string>
+    <string name="pikpak_error_file_failed">PikPak get file failed: %1$s %2$s</string>
+    <string name="pikpak_error_files_http">PikPak list files HTTP %1$d: %2$s</string>
+    <string name="pikpak_error_denied">PikPak denied the request (HTTP %1$d).</string>
+    <string name="pikpak_error_unavailable">PikPak is temporarily unavailable (HTTP %1$d). Try again later.</string>
+    <string name="pikpak_error_rate_limited">PikPak is rate-limiting requests (\"Your operation is too frequent\"). Wait a while and try again.</string>
+    <string name="pikpak_error_captcha_http">PikPak captcha HTTP %1$d: %2$s</string>
+    <string name="pikpak_error_captcha_failed">PikPak captcha failed: %1$s %2$s %3$s</string>
+</resources>
