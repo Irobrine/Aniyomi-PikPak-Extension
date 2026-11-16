@@ -23,6 +23,31 @@ internal object PikPakPrefs {
     const val FLAT_FOLDERS = "detect_flat_folders"
     const val QUALITY = "preferred_quality"
 
+    // Ids and answers remembered between app processes, so the catalog does not have to walk the
+    // drive from its root or probe every folder again on a cold start.
+    const val MY_PACK_ID = "cached_my_pack_id"
+    const val EXTRA_FOLDER_IDS = "cached_extra_folder_ids"
+    const val EXTRA_FOLDER_NAMES = "cached_extra_folder_names"
+    const val FOLDER_LAYOUTS = "cached_folder_layouts"
+    const val CAPTCHA_TOKEN = "cached_captcha_token"
+    const val CAPTCHA_ACTION = "cached_captcha_action"
+    const val CAPTCHA_EXPIRES_AT = "cached_captcha_expires_at"
+
+    /**
+     * Pairs each link line with the name typed on the same line.
+     *
+     * Blank link lines are separators and are skipped, blank name lines keep that download's
+     * original name, and missing name lines default the same way.
+     */
+    fun parseCloudEntries(links: String?, names: String?): List<Pair<String, String?>> {
+        val nameLines = names.orEmpty().lines()
+        return links.orEmpty().lines().mapIndexedNotNull { index, line ->
+            val link = line.trim()
+            if (link.isEmpty()) return@mapIndexedNotNull null
+            link to nameLines.getOrNull(index)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+    }
+
     /**
      * Splits the configured extra folders. Entries are separated by newlines or semicolons so
      * folder names may contain commas.

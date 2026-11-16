@@ -124,12 +124,12 @@ internal object EpisodeOrdering {
     }
 
     fun displayName(episode: NumberedEpisode, includeSeason: Boolean = false): String {
+        // Release versions (`v2`, `v03`) only decide the order of alternate releases; they are
+        // noise in an episode name.
         val marker = FilmNameParser.formatEpisode(episode.number, episode.endNumber, episode.kind)
-        val version = episode.record.version.takeIf { it > 1 }?.let { " v$it" }.orEmpty()
-        val titled = marker + version
-        if (!includeSeason) return titled
-        val season = episode.record.season?.takeIf { it.isNotBlank() } ?: return titled
+        if (!includeSeason) return marker
+        val season = episode.record.season?.takeIf { it.isNotBlank() } ?: return marker
         val label = FilmNameParser.cleanAnimeName(season).ifBlank { season }
-        return "$label $titled"
+        return "$label $marker"
     }
 }

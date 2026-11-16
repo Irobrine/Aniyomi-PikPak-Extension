@@ -115,8 +115,8 @@ internal class PikPakStrings private constructor(private val resources: Resource
 
     fun flatFoldersSummary(): String = get(
         R.string.pikpak_flat_folders_summary,
-        "Probe each folder so a folder without sub-folders opens straight into episodes. Costs one " +
-            "request per folder when the catalog loads.",
+        "Probe the folders on a catalog page so a folder without sub-folders opens straight into " +
+            "episodes. Each folder is probed once and the answer is remembered.",
     )
 
     fun qualityTitle(): String = get(R.string.pikpak_quality_title, "Preferred resolution")
@@ -186,6 +186,36 @@ internal class PikPakStrings private constructor(private val resources: Resource
 
     fun cloudSectionTitle(): String = get(R.string.pikpak_cloud_section, "Cloud downloads")
 
+    fun cloudEntryTitle(): String = get(R.string.pikpak_cloud_entry_title, "Cloud downloads")
+
+    fun cloudEntryDescription(): String = get(
+        R.string.pikpak_cloud_entry_description,
+        "Tap Add Cloud Download to save magnet or video links. Tap a download to rename it — " +
+            "running ones are renamed when they finish.",
+    )
+
+    fun cloudEntryNoDownloads(): String = get(R.string.pikpak_cloud_entry_no_downloads, "No downloads yet.")
+
+    fun cloudEntryTapHint(): String = get(
+        R.string.pikpak_cloud_entry_tap_hint,
+        "Tap a download to rename or move it.",
+    )
+
+    fun cloudDialogTitle(): String = get(R.string.pikpak_cloud_dialog_title, "Cloud downloads")
+
+    fun cloudEntryDownloadsHeader(): String = get(R.string.pikpak_cloud_entry_downloads_header, "Downloads")
+
+    fun cloudEntryMore(count: Int): String = get(
+        R.string.pikpak_cloud_entry_more,
+        "…and %1\$d more",
+        count,
+    )
+
+    fun cloudOpenSettingsHint(): String = get(
+        R.string.pikpak_cloud_open_settings_hint,
+        "Open the PikPak settings and tap Add Cloud Download.",
+    )
+
     fun cloudSummary(): String = get(
         R.string.pikpak_cloud_summary,
         "Send magnet or video links to PikPak and follow their progress here.",
@@ -194,6 +224,16 @@ internal class PikPakStrings private constructor(private val resources: Resource
     fun cloudLinksLabel(): String = get(R.string.pikpak_cloud_links_label, "Links")
 
     fun cloudLinksHint(): String = get(R.string.pikpak_cloud_links_hint, "One link per line")
+
+    fun cloudNamesLabel(): String = get(
+        R.string.pikpak_cloud_names_label,
+        "Names (optional, one per link)",
+    )
+
+    fun cloudNamesHint(): String = get(
+        R.string.pikpak_cloud_names_hint,
+        "Leave a line blank to keep the original name",
+    )
 
     fun cloudDestinationLabel(): String = get(R.string.pikpak_cloud_destination_label, "Download to")
 
@@ -248,6 +288,20 @@ internal class PikPakStrings private constructor(private val resources: Resource
     fun cloudRenameEmpty(): String = get(R.string.pikpak_cloud_rename_empty, "Enter a name.")
 
     fun cloudEdited(): String = get(R.string.pikpak_cloud_edited, "Download updated")
+
+    fun cloudEditQueued(): String = get(
+        R.string.pikpak_cloud_edit_queued,
+        "Name saved — it is applied when the download finishes.",
+    )
+
+    fun cloudEditPendingNote(): String = get(
+        R.string.pikpak_cloud_edit_pending_note,
+        "This download is still running. The new name is applied when it finishes.",
+    )
+
+    fun cloudRenameQueued(): String = get(R.string.pikpak_cloud_rename_queued, "rename queued")
+
+    fun cloudMoveQueued(): String = get(R.string.pikpak_cloud_move_queued, "move queued")
 
     fun cloudEditFailed(): String = get(R.string.pikpak_cloud_edit_failed, "Could not update the download.")
 

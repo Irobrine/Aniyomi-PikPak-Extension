@@ -43,9 +43,19 @@
 
     <string name="pikpak_cloud_title">Add Cloud Download</string>
     <string name="pikpak_cloud_section">Cloud downloads</string>
+    <string name="pikpak_cloud_entry_title">Cloud downloads</string>
+    <string name="pikpak_cloud_entry_description">Tap Add Cloud Download to save magnet or video links. Tap a download to rename it — running ones are renamed when they finish.</string>
+    <string name="pikpak_cloud_entry_no_downloads">No downloads yet.</string>
+    <string name="pikpak_cloud_entry_tap_hint">Tap a download to rename or move it.</string>
+    <string name="pikpak_cloud_dialog_title">Cloud downloads</string>
+    <string name="pikpak_cloud_entry_downloads_header">Downloads</string>
+    <string name="pikpak_cloud_entry_more">…and %1$d more</string>
+    <string name="pikpak_cloud_open_settings_hint">Open the PikPak settings and tap Add Cloud Download.</string>
     <string name="pikpak_cloud_summary">Send magnet or video links to PikPak and follow their progress here.</string>
     <string name="pikpak_cloud_links_label">Links</string>
     <string name="pikpak_cloud_links_hint">One link per line</string>
+    <string name="pikpak_cloud_names_label">Names (optional, one per link)</string>
+    <string name="pikpak_cloud_names_hint">Leave a line blank to keep the original name</string>
     <string name="pikpak_cloud_destination_label">Download to</string>
     <string name="pikpak_cloud_destination_hint">My Pack</string>
     <string name="pikpak_cloud_download">Download</string>
@@ -65,13 +75,17 @@
     <string name="pikpak_cloud_rename_label">Name</string>
     <string name="pikpak_cloud_rename_empty">Enter a name.</string>
     <string name="pikpak_cloud_edited">Download updated</string>
+    <string name="pikpak_cloud_edit_queued">Name saved — it is applied when the download finishes.</string>
+    <string name="pikpak_cloud_edit_pending_note">This download is still running. The new name is applied when it finishes.</string>
+    <string name="pikpak_cloud_rename_queued">rename queued</string>
+    <string name="pikpak_cloud_move_queued">move queued</string>
     <string name="pikpak_cloud_edit_failed">Could not update the download.</string>
     <string name="pikpak_error_rename_failed">PikPak could not rename the download: %1$s</string>
     <string name="pikpak_error_move_failed">PikPak could not move the download: %1$s</string>
     <string name="pikpak_error_folder_missing">Folder not found: %1$s</string>
 
     <string name="pikpak_flat_folders_title">Detect flat folders</string>
-    <string name="pikpak_flat_folders_summary">Probe each folder so a folder without sub-folders opens straight into episodes. Costs one request per folder when the catalog loads.</string>
+    <string name="pikpak_flat_folders_summary">Probe the folders on a catalog page so a folder without sub-folders opens straight into episodes. Each folder is probed once and the answer is remembered.</string>
 
     <string name="pikpak_quality_title">Preferred resolution</string>
     <string name="pikpak_quality_summary">Only this resolution is offered for playback and downloads. When it is missing, the closest higher resolution is used, then lower ones.</string>

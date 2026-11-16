@@ -33,8 +33,8 @@ StremThru, Real-Debrid or other intermediary service.
   rejected as episode numbers. Files without a number are numbered in name order.
 - **Classification** — folders and files are classified as series, movie, episode, special, OVA,
   ONA or short, so single movies and specials do not look like ordinary seasons.
-- **Cloud downloads** — paste magnet or video links in the settings and PikPak downloads them to
-  your drive; progress stays visible while the transfer runs on PikPak's servers.
+- **Cloud downloads** — paste magnet or video links, optionally name each one, and PikPak downloads
+  them to your drive; progress stays visible while the transfer runs on PikPak's servers.
 - **Direct playback** — episodes resolve to PikPak's own stream links.
 
 ## Requirements
@@ -111,23 +111,34 @@ resolves the configured entries and reports how many anime each one contains.
 
 - **Links** accepts one link per line — magnets, direct file URLs and links PikPak itself supports,
   such as share links.
+- **Names (optional, one per link)** names the downloads line by line with the Links box. Leave a
+  line blank to keep that download's original name; lines without a name at all do the same.
 - **Download to** is a folder ID or path like the extra-folders field. It defaults to `My Pack`, and
   an unknown path falls back to `My Pack` instead of failing the download.
 
 **Download** closes the dialog and submits the links in the background. Each link becomes a row under
 **Cloud downloads** showing its progress, and the row changes to *Download complete* or an error
-message when the transfer finishes. Tap a completed row to rename the downloaded folder or video, or
-to move it into another folder.
-PikPak performs the transfer, so closing the settings page or the app does not stop it; reopening the
-settings shows the current progress again. Finished entries are cleared automatically after a day.
+message when the transfer finishes. PikPak performs the transfer, so closing the settings page or the
+app does not stop it; reopening the settings shows the current progress again. Finished entries are
+cleared automatically after a day.
+
+Tap any row to rename it or to move it into another folder. A finished download is renamed straight
+away. A running one cannot be renamed at PikPak yet, so the name is kept on the row (*rename queued*)
+and written to the file as soon as the transfer completes — the app keeps following the download in
+the background for a while, and the queued edit is also applied the next time the cloud downloads
+list or the catalog is opened.
+
+The **Cloud downloads** entry in the catalog exists only to host the dialog: closing the dialog, by
+Cancel, back/outside tap, or **Download**, also leaves that entry, so it does not strand you on an
+empty anime screen.
 
 ### Catalog options
 
 - **Sort** and **Type** filters order the catalog by newest, oldest, or name, and can hide single files.
 - Search matches the whole catalog, not just the first page.
-- **Detect flat folders** probes folders so a folder without sub-folders opens straight into episodes.
-  Disable it on very large drives to make the catalog load faster; flat folders then show one
-  synthetic season instead.
+- **Detect flat folders** probes the folders of a catalog page so a folder without sub-folders opens
+  straight into episodes. Each folder is probed once and the answer is remembered, so later loads are
+  free; disable it to skip the probe entirely and show one synthetic season for flat folders.
 - Episodes expose every PikPak stream variant (for example `PikPak 1080p`), so you can pick a
   lower-bitrate transcode when the original buffers.
 - **Preferred resolution** offers only one quality (Automatic, Original, 1080p, 720p, 480p, 360p).
@@ -156,7 +167,8 @@ Tips:
   `My Pack/[Group] Horimiya [1080p]/` becomes `Horimiya` in the catalog.
 - Anime folder names are matched against AniList, so using the official title gives the best result.
 - Episodes are numbered from their file names; files without a number are numbered in name order
-  and alternate releases (`v2`) are kept and ordered deterministically.
+  and alternate releases (`v2`, `v03`) are kept and ordered deterministically. Release versions do
+  not appear in the episode names shown in the app.
 
 ## Metadata
 

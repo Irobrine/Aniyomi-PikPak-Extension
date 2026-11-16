@@ -28,10 +28,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.CacheControl
+import okhttp3.Dispatcher
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -59,6 +61,7 @@ internal class PikPakClient(
     private val deviceId: String,
     private val strings: PikPakStrings,
     private val tokenStore: TokenStore = NoOpTokenStore,
+    private val captchaStore: CaptchaStore = NoOpCaptchaStore,
     refreshSeed: String? = null,
 ) {
     interface TokenStore {
@@ -70,6 +73,22 @@ internal class PikPakClient(
 
         /** Drops the persisted session after PikPak definitively rejects it. */
         fun clear() = Unit
+    }
+
+    /**
+     * Keeps the last captcha between app processes.
+     *
+     * Minting one takes over a second, and the host kills the app between visits, so a captcha
+     * that is still valid is worth keeping: it turns the first catalog load into a few drive
+     * reads instead of a full handshake. PikPak expires them on its own, so nothing older than
+     * [Stored.expiresAt] is reused.
+     */
+    interface CaptchaStore {
+        fun load(): Stored?
+        fun save(captcha: Stored)
+        fun clear() = Unit
+
+        data class Stored(val action: String, val token: String, val expiresAt: Long)
     }
 
     data class StoredTokens(
@@ -91,6 +110,11 @@ internal class PikPakClient(
     private object NoOpTokenStore : TokenStore {
         override fun load(): StoredTokens? = null
         override fun save(tokens: StoredTokens) = Unit
+    }
+
+    private object NoOpCaptchaStore : CaptchaStore {
+        override fun load(): CaptchaStore.Stored? = null
+        override fun save(captcha: CaptchaStore.Stored) = Unit
     }
 
     data class Listing(
@@ -118,8 +142,30 @@ internal class PikPakClient(
         encodeDefaults = true
     }
 
+    /**
+     * Client used for every PikPak call.
+     *
+     * The host's shared client allows only five requests per host, which serialises drive reads:
+     * a catalog page with a few dozen folders would be resolved in as many waves. PikPak's drive
+     * reads are independent, so this client keeps its own dispatcher and lets a page be probed in
+     * one burst. Interceptors, cache and connection pool are inherited from the host client.
+     */
+    private val driveClient: OkHttpClient = client.newBuilder()
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = MAX_REQUESTS
+                maxRequestsPerHost = MAX_REQUESTS_PER_HOST
+            },
+        )
+        .build()
+
     private val authMutex = Mutex()
     private val captchas = TtlCache<String, String>(MAX_CAPTCHA_ENTRIES)
+    private val captchaLocks = ConcurrentHashMap<String, Mutex>()
+    private val warmMutex = Mutex()
+
+    @Volatile
+    private var driveConnectionWarmedAt = 0L
 
     @Volatile
     private var accessToken: String? = null
@@ -150,6 +196,14 @@ internal class PikPakClient(
             // A refresh token imported from the web session is the only way in.
             refreshToken = refreshSeed?.takeIf { it.isNotBlank() }
             seedInUse = refreshToken != null
+        }
+
+        runCatching { captchaStore.load() }.getOrNull()?.let { captcha ->
+            val remaining = captcha.expiresAt - System.currentTimeMillis()
+            if (captcha.action.isNotBlank() && captcha.token.isNotBlank() && remaining > MIN_CAPTCHA_LIFETIME_MS) {
+                captchas.put(captcha.action, captcha.token, remaining)
+                Log.d(TAG, "captcha restored action=${captcha.action} expiresIn=${remaining / 1000}s")
+            }
         }
     }
 
@@ -189,6 +243,9 @@ internal class PikPakClient(
         }
     }
 
+    /** True when the next request will have to exchange the refresh token first. */
+    private fun sessionNeedsRefresh(): Boolean = accessToken == null || nowSeconds() >= expiresAt - 600
+
     private fun isDefinitiveRejection(): Boolean {
         if (lastRefreshCode == 401 || lastRefreshCode == 403) return true
         val error = lastRefreshError ?: return false
@@ -226,11 +283,12 @@ internal class PikPakClient(
             .addPathSegment("token")
             .build()
 
-        client.post(url, clientHeaders(includeAuth = accessToken != null), body, ensureSuccess = false)
+        val startedAt = System.currentTimeMillis()
+        driveClient.post(url, clientHeaders(includeAuth = accessToken != null), body, ensureSuccess = false)
             .use { response ->
                 val text = response.body.string()
                 lastRefreshCode = response.code
-                Log.d(AUTH_TAG, "refresh attempt code=${response.code}")
+                Log.d(AUTH_TAG, "refresh attempt code=${response.code} in=${System.currentTimeMillis() - startedAt}ms")
 
                 if (!response.isSuccessful) {
                     lastRefreshError = runCatching {
@@ -270,16 +328,6 @@ internal class PikPakClient(
     }
 
     // =============================== Drive ================================
-
-    suspend fun listMyPack(): List<PikPakFile> {
-        ensureSession()
-
-        val myPack = myPackFolder()
-
-        return listChildrenAll(myPack.id)
-            .filter { it.id.isNotBlank() && it.trashed != true }
-            .filter { it.phase == null || it.phase == PHASE_COMPLETE }
-    }
 
     /** The drive root's `My Pack` folder, which is the default destination of downloads. */
     suspend fun myPackFolder(): PikPakFile {
@@ -451,6 +499,21 @@ internal class PikPakClient(
     }
 
     /**
+     * First page of [folderId] only.
+     *
+     * Used to describe a folder (does it hold season sub-folders, or several seasons of flat
+     * files?) without reading every file it contains: one extra page of five hundred entries is
+     * already far more than needed, and paginating a large folder would cost one request per
+     * page.
+     */
+    suspend fun listChildrenFirstPage(folderId: String): List<PikPakFile> {
+        ensureSession()
+        return listChildrenAll(folderId, maxPages = 1)
+            .filter { it.id.isNotBlank() && it.trashed != true }
+            .filter { it.phase == null || it.phase == PHASE_COMPLETE }
+    }
+
+    /**
      * Every playable representation PikPak offers for [fileId], newest expiry filtered out and
      * sorted from best to worst quality.
      */
@@ -530,18 +593,18 @@ internal class PikPakClient(
         return folder
     }
 
-    private suspend fun listChildrenAll(parentId: String): List<PikPakFile> {
+    private suspend fun listChildrenAll(parentId: String, maxPages: Int = MAX_PAGES): List<PikPakFile> {
         val result = mutableListOf<PikPakFile>()
         var pageToken = ""
         var pageCount = 0
         do {
-            if (++pageCount > MAX_PAGES) break
+            if (++pageCount > maxPages) break
             val data = listFiles(parentId, pageToken)
             data.error?.let { throw IOException(strings.listError("$it ${data.errorDescription.orEmpty()}")) }
             result.addAll(data.files.orEmpty())
             pageToken = data.nextPageToken.orEmpty()
         } while (pageToken.isNotEmpty())
-        if (pageCount > MAX_PAGES) {
+        if (pageToken.isNotEmpty()) {
             Log.d(TAG, "list truncated parent=$parentId pages=$pageCount")
         }
         return result.filter { it.id.isNotBlank() && it.trashed != true }
@@ -679,7 +742,14 @@ internal class PikPakClient(
             if (!response.isSuccessful) {
                 throw IOException(strings.filesHttp(response.code, body.take(200)))
             }
-            return json.decodeFromString<PikPakFileListResponse>(body)
+            val data = json.decodeFromString<PikPakFileListResponse>(body)
+            // Kept for diagnosing slow catalog loads: a folder with thousands of entries answers
+            // with a much larger payload than the ten or so names the catalog needs.
+            Log.d(
+                TAG,
+                "list parent=${parentId.ifBlank { "root" }} files=${data.files?.size ?: 0} bytes=${body.length}",
+            )
+            return data
         }
     }
 
@@ -714,12 +784,12 @@ internal class PikPakClient(
      * rate limiting (429) and server errors (5xx).
      */
     private suspend fun driveGet(url: HttpUrl): Response = driveRequest("GET:${url.encodedPath}") { action ->
-        client.get(url, driveHeaders(action), CacheControl.FORCE_NETWORK, ensureSuccess = false)
+        driveClient.get(url, driveHeaders(action), CacheControl.FORCE_NETWORK, ensureSuccess = false)
     }
 
     /** Authenticated drive POST, with the same retry and refresh behaviour as [driveGet]. */
     private suspend fun drivePost(url: HttpUrl, body: RequestBody): Response = driveRequest("POST:${url.encodedPath}") { action ->
-        client.post(url, driveHeaders(action), body, ensureSuccess = false)
+        driveClient.post(url, driveHeaders(action), body, ensureSuccess = false)
     }
 
     /** Authenticated drive PATCH, with the same retry and refresh behaviour as [driveGet]. */
@@ -729,7 +799,7 @@ internal class PikPakClient(
             .headers(driveHeaders(action))
             .patch(body)
             .build()
-        client.newCall(request).await()
+        driveClient.newCall(request).await()
     }
 
     private suspend fun driveRequest(
@@ -740,9 +810,20 @@ internal class PikPakClient(
         var attempt = 0
 
         while (true) {
-            ensureSession()
+            coroutineScope {
+                // Opening the drive connections is free only while something else is already
+                // waiting: a token refresh or a captcha mint. Otherwise the request itself opens
+                // them, in parallel with its siblings.
+                val warm = if (sessionNeedsRefresh()) async { warmDriveConnection() } else null
+                ensureSession()
+                warm?.await()
+                captchaFor(action)
+            }
+
+            val startedAt = System.currentTimeMillis()
             val response = send(action)
             val code = response.code
+            Log.d(TAG, "drive $action code=$code in=${System.currentTimeMillis() - startedAt}ms")
 
             if (code == 401 || code == 403) {
                 response.close()
@@ -808,23 +889,94 @@ internal class PikPakClient(
     /**
      * PikPak binds a captcha to the action it was minted for, so each request path keeps its own
      * until it expires. The cache is bounded because file paths are unique.
+     *
+     * Requests that need a captcha at the same time share one init: PikPak rejects a burst of
+     * init calls from the same device ("too frequent"), and the catalog starts several reads at
+     * once.
      */
     private suspend fun captchaFor(action: String): String {
         captchas.get(action)?.let { return it }
 
-        val response = initCaptcha(action)
-        val ttlSeconds = response.expiresIn.takeIf { it > 0 } ?: DEFAULT_CAPTCHA_TTL_SECONDS
-        val ttlMs = (ttlSeconds * 1000 - CAPTCHA_EXPIRY_MARGIN_MS).coerceAtLeast(1_000L)
-        captchas.put(action, response.captchaToken, ttlMs)
-        return response.captchaToken
+        val lock = captchaLocks.computeIfAbsent(action) { Mutex() }
+        try {
+            return lock.withLock {
+                captchas.get(action) ?: coroutineScope {
+                    // Opening the drive connections is hidden by the captcha round trip, so the
+                    // requests that follow reuse them instead of handshaking one by one.
+                    val warm = async { warmDriveConnection() }
+
+                    val response = initCaptcha(action)
+                    val ttlSeconds = response.expiresIn.takeIf { it > 0 } ?: DEFAULT_CAPTCHA_TTL_SECONDS
+                    val ttlMs = (ttlSeconds * 1000 - CAPTCHA_EXPIRY_MARGIN_MS).coerceAtLeast(1_000L)
+                    captchas.put(action, response.captchaToken, ttlMs)
+                    runCatching {
+                        captchaStore.save(
+                            CaptchaStore.Stored(
+                                action = action,
+                                token = response.captchaToken,
+                                expiresAt = System.currentTimeMillis() + ttlMs,
+                            ),
+                        )
+                    }
+                    withTimeoutOrNull(WARM_WAIT_MS) { warm.await() }
+                    response.captchaToken
+                }
+            }
+        } finally {
+            captchaLocks.remove(action, lock)
+        }
     }
+
+    /**
+     * Opens connections to the drive host without sending a request that matters.
+     *
+     * The answers are thrown away, but OkHttp keeps the TLS connections in the pool for the
+     * requests that follow. PikPak's drive API answers with HTTP/1.1, so one connection can only
+     * carry one request: a catalog page reads several folders at once and would otherwise pay a
+     * separate handshake for each one after the captcha. Opening them here overlaps that work
+     * with the captcha and with any session refresh, neither of which needs a drive connection.
+     */
+    private suspend fun warmDriveConnection() {
+        // Idle connections are dropped after a few minutes, so a warm-up only counts for a while.
+        if (System.currentTimeMillis() - driveConnectionWarmedAt < WARM_REFRESH_MS) return
+
+        warmMutex.withLock {
+            if (System.currentTimeMillis() - driveConnectionWarmedAt < WARM_REFRESH_MS) return
+            val startedAt = System.currentTimeMillis()
+            val warmed = coroutineScope {
+                (0 until WARM_CONNECTIONS).map { async { warmOneConnection() } }.awaitAll().any { it }
+            }
+
+            if (warmed) {
+                driveConnectionWarmedAt = System.currentTimeMillis()
+                Log.d(
+                    TAG,
+                    "drive connection warm connections=$WARM_CONNECTIONS in=${System.currentTimeMillis() - startedAt}ms",
+                )
+            }
+        }
+    }
+
+    private suspend fun warmOneConnection(): Boolean = runCatching {
+        withTimeoutOrNull(WARM_CONNECT_TIMEOUT_MS) {
+            val request = Request.Builder()
+                .url(DRIVE_BASE)
+                .head()
+                .build()
+            // Reading the body is what lets OkHttp keep the connection in the pool.
+            driveClient.newCall(request).await().use { it.body.string() }
+            true
+        } ?: false
+    }.getOrDefault(false)
 
     private fun invalidateCaptcha(action: String) {
         captchas.remove(action)
+        runCatching { captchaStore.clear() }
     }
 
     private fun invalidateCaptchas() {
         captchas.clear()
+        runCatching { captchaStore.clear() }
     }
 
     private suspend fun initCaptcha(action: String): PikPakCaptchaResponse {
@@ -847,12 +999,14 @@ internal class PikPakClient(
             .addPathSegment("init")
             .build()
 
-        client.post(
+        val startedAt = System.currentTimeMillis()
+        driveClient.post(
             url,
             clientHeaders(includeAuth = accessToken != null),
             requestBody,
             ensureSuccess = false,
         ).use { response ->
+            Log.d(TAG, "captcha $action code=${response.code} in=${System.currentTimeMillis() - startedAt}ms")
             val body = response.body.string()
             if (!response.isSuccessful) {
                 if (response.code == 409 || body.contains("too frequent", ignoreCase = true)) {
@@ -892,11 +1046,21 @@ internal class PikPakClient(
         private const val TREE_CONCURRENCY = 4
         private const val TREE_FANOUT = 32
 
+        // PikPak's endpoints are independent reads, so they are not limited to the host
+        // client's five requests per host.
+        private const val MAX_REQUESTS = 64
+        private const val MAX_REQUESTS_PER_HOST = 12
+
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_BASE_MS = 750L
         private const val MAX_RETRY_WAIT_MS = 10_000L
         private const val DEFAULT_CAPTCHA_TTL_SECONDS = 300L
         private const val CAPTCHA_EXPIRY_MARGIN_MS = 30_000L
+        private const val MIN_CAPTCHA_LIFETIME_MS = 30_000L
+        private const val WARM_CONNECT_TIMEOUT_MS = 3_000L
+        private const val WARM_CONNECTIONS = 3
+        private const val WARM_WAIT_MS = 500L
+        private const val WARM_REFRESH_MS = 4 * 60 * 1000L
         private const val MAX_CAPTCHA_ENTRIES = 64
         private const val ORIGIN_QUALITY_RANK = 10_000
 

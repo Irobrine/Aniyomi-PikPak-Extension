@@ -18,13 +18,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Direct PikPak source.
@@ -54,6 +57,21 @@ abstract class PikPak :
     private val seasonProbeCache = TtlCache<String, Boolean>(MAX_PROBE_ENTRIES)
     private val streamCache = TtlCache<String, List<PikPakClient.StreamVariant>>(MAX_STREAM_ENTRIES)
 
+    /**
+     * Drive ids and folder layouts survive the app process, so a cold catalog load does not have
+     * to walk down from the drive root or probe folders it has already looked at.
+     */
+    private val myPackId by lazy { PreferenceMap(preferences, PikPakPrefs.MY_PACK_ID, ttlMs = DRIVE_ID_CACHE_MS) }
+    private val extraFolderIds by lazy { PreferenceMap(preferences, PikPakPrefs.EXTRA_FOLDER_IDS, ttlMs = DRIVE_ID_CACHE_MS) }
+    private val extraFolderNames by lazy { PreferenceMap(preferences, PikPakPrefs.EXTRA_FOLDER_NAMES, ttlMs = RESOLUTION_CACHE_MS) }
+    private val folderLayouts by lazy { PreferenceMap(preferences, PikPakPrefs.FOLDER_LAYOUTS, ttlMs = LAYOUT_CACHE_MS) }
+
+    /**
+     * Locks for loads that are in progress, so requests that race for the same entry share one
+     * round of network work instead of each repeating it.
+     */
+    private val loadLocks = ConcurrentHashMap<String, Mutex>()
+
     @Volatile
     private var directClientInstance: PikPakClient? = null
 
@@ -64,6 +82,13 @@ abstract class PikPak :
             onFilesChanged = ::resetCatalog,
             strings = strings,
         )
+    }
+
+    private val cloudUi by lazy { PikPakCloudDownloadUi(cloudDownloads, strings) }
+
+    init {
+        // Register early so the synthetic "Cloud downloads" entry can reach the host Activity.
+        PikPakHostActivity.register()
     }
 
     @Volatile
@@ -120,6 +145,18 @@ abstract class PikPak :
 
     override suspend fun getAnimeDetails(anime: SAnime): SAnime {
         Log.d(TAG, "details start url=${anime.url}")
+        if (anime.url == CLOUD_ENTRY_URL) {
+            // The synthetic catalog entry doubles as a shortcut to the cloud download dialog.
+            Log.d(TAG, "cloud details fetch")
+            cloudUi.requestShow()
+            anime.title = strings.cloudEntryTitle()
+            anime.description = cloudEntryDescription()
+            anime.fetch_type = FetchType.Episodes
+            anime.thumbnail_url = anime.thumbnail_url?.takeIf { it.isNotBlank() } ?: FALLBACK_POSTER
+            anime.initialized = true
+            return anime
+        }
+
         val (itemId, season) = parseSeasonUrl(anime.url)
         if (season != null) {
             anime.fetch_type = FetchType.Episodes
@@ -245,6 +282,15 @@ abstract class PikPak :
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         Log.d(TAG, "episode list start url=${anime.url}")
+        if (anime.url == CLOUD_ENTRY_URL) {
+            // The host only re-fetches episodes while the stored list is empty. Keeping it empty
+            // makes this run on every visit, which is what opens the dialog each time.
+            Log.d(TAG, "cloud episodes fetch")
+            anime.description = cloudEntryDescription()
+            cloudUi.requestShow()
+            return emptyList()
+        }
+
         val (itemId, seasonFilter) = parseSeasonUrl(anime.url)
         val library = libraryFor(itemId)
 
@@ -318,6 +364,27 @@ abstract class PikPak :
                     preview_url = episode.record.thumbnail.orEmpty()
                 }
             }
+    }
+
+    /** Episodes of the synthetic entry stay empty; downloads are listed in the description. */
+    private fun cloudEntryDescription(): String {
+        val intro = strings.cloudEntryDescription()
+        val records = cloudDownloads.load().asReversed()
+        if (records.isEmpty()) {
+            return "$intro\n\n${strings.cloudEntryNoDownloads()}"
+        }
+
+        val shown = records.take(MAX_DESCRIPTION_DOWNLOADS)
+        val list = shown.joinToString("\n") { record ->
+            val destination = record.destination.ifBlank { strings.cloudDestinationHint() }
+            "• ${record.displayTitle(strings)} — ${record.statusLabel(strings)} · $destination"
+        }
+        val more = if (records.size > shown.size) {
+            "\n" + strings.cloudEntryMore(records.size - shown.size)
+        } else {
+            ""
+        }
+        return "$intro\n\n${strings.cloudEntryDownloadsHeader()}\n$list$more"
     }
 
     // ============================== Hosters ===============================
@@ -399,27 +466,41 @@ abstract class PikPak :
     private suspend fun myPack(): List<CatalogItem> {
         val extras = extraFolders()
         val key = "${sessionKey()}|${extras.joinToString("|")}"
-        catalogCache.get(key)?.let { return it }
+        return singleFlight(key, catalogCache, CATALOG_CACHE_MS) { loadMyPack(extras) }
+    }
 
+    /**
+     * Builds the catalog from My Pack and the configured extra folders.
+     *
+     * The host may ask for the first page more than once while a listing settles; those requests
+     * share one load through [singleFlight] instead of each repeating every drive request.
+     */
+    private suspend fun loadMyPack(extras: List<String>): List<CatalogItem> {
+        val startedAt = System.currentTimeMillis()
         val client = directClient()
 
-        val items = try {
-            client.listMyPack()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.d(TAG, "my pack failed: ${e.message}")
-            throw IOException(strings.myPackFailed(e.message.orEmpty()), e)
+        // My Pack and the extra folders are independent reads. Running them together keeps the
+        // first catalog load from paying for both one after the other, and the remembered ids
+        // skip the drive-root lookup that would otherwise precede them by another round trip.
+        val (items, pinned) = coroutineScope {
+            val itemsJob = async { myPackItems(client) }
+            val pinnedJob = async {
+                val gate = Semaphore(EXTRA_FOLDER_CONCURRENCY)
+                extras.map { input ->
+                    async { gate.withPermit { resolveExtraFolders(client, input) } }
+                }.awaitAll().flatten()
+                    .distinctBy { it.id }
+                    .mapIndexed { index, item -> item.copy(order = index) }
+            }
+            try {
+                itemsJob.await() to pinnedJob.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "my pack failed: ${e.message}")
+                throw IOException(strings.myPackFailed(e.message.orEmpty()), e)
+            }
         }
-
-        val pinned = coroutineScope {
-            val gate = Semaphore(EXTRA_FOLDER_CONCURRENCY)
-            extras.map { input ->
-                async { gate.withPermit { resolveExtraFolders(client, input) } }
-            }.awaitAll()
-        }.flatten()
-            .distinctBy { it.id }
-            .mapIndexed { index, item -> item.copy(order = index) }
         val pinnedIds = pinned.map { it.id }.toSet()
         val combined = pinned + filterCatalog(items)
             .map { it.toCatalogItem() }
@@ -431,9 +512,37 @@ abstract class PikPak :
                     .thenBy { it.name.lowercase(Locale.US) },
             )
 
-        Log.d(TAG, "my pack items=${items.size} extras=${pinned.size}")
-        catalogCache.put(key, combined, CATALOG_CACHE_MS)
+        Log.d(
+            TAG,
+            "my pack items=${items.size} extras=${pinned.size} in=${System.currentTimeMillis() - startedAt}ms",
+        )
         return combined
+    }
+
+    /**
+     * Contents of My Pack, using the folder id remembered from a previous load when possible.
+     *
+     * Looking the folder up by name costs a drive-root listing, and the catalog waits for it
+     * before it can even ask for the contents. A remembered id makes the contents the first
+     * (and only) request. Ids survive renames and moves; a deleted folder falls back to the
+     * lookup.
+     */
+    private suspend fun myPackItems(client: PikPakClient): List<PikPakFile> {
+        val cachedId = myPackId.get(EMPTY_KEY)
+        if (cachedId != null) {
+            try {
+                return client.listChildren(cachedId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "my pack id stale: ${e.message}")
+                myPackId.remove(EMPTY_KEY)
+            }
+        }
+
+        val folder = client.myPackFolder()
+        myPackId.put(EMPTY_KEY, folder.id)
+        return client.listChildren(folder.id)
     }
 
     /**
@@ -445,36 +554,10 @@ abstract class PikPak :
     private suspend fun resolveExtraFolders(client: PikPakClient, input: String): List<CatalogItem> {
         extraFolderCache.get(input)?.let { return it }
 
+        val startedAt = System.currentTimeMillis()
         val items = try {
-            val folder = client.resolveFolder(input)
-            if (folder == null) {
-                emptyList()
-            } else {
-                val children = client.listChildren(folder.id)
-                    .filter { it.id.isNotBlank() }
-                val childFolders = children.filter { it.kind == KIND_FOLDER }
-                val videos = children.filter {
-                    it.kind != KIND_FOLDER &&
-                        (isVideoFile(it.name) || it.params?.url?.startsWith("magnet:", ignoreCase = true) == true)
-                }
-                val informativeFolders = childFolders.filterNot { folder ->
-                    val role = DirectoryAnalyzer.classify(folder.name).role
-                    role == DirectoryRole.GENERIC || role == DirectoryRole.RELEASE_GROUP || role == DirectoryRole.YEAR
-                }
-                val childRoles = informativeFolders.map { DirectoryAnalyzer.classify(it.name).role }
-                val childFoldersAreSeasons = childRoles.isNotEmpty() && childRoles.all {
-                    it == DirectoryRole.SEASON || it == DirectoryRole.PART ||
-                        it == DirectoryRole.COUR || it == DirectoryRole.DISC ||
-                        it == DirectoryRole.SPECIAL
-                }
-
-                when {
-                    informativeFolders.isEmpty() -> listOf(folder.toCatalogItem(pinned = true))
-                    childFoldersAreSeasons -> listOf(folder.toCatalogItem(pinned = true))
-                    else -> informativeFolders.map { it.toCatalogItem(pinned = true) } +
-                        videos.map { it.toCatalogItem(pinned = true) }
-                }
-            }
+            resolveExtraFolder(client, input)?.let { (folder, children) -> expandExtraFolder(folder, children) }
+                ?: emptyList()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -487,8 +570,70 @@ abstract class PikPak :
             items,
             if (items.isNotEmpty()) EXTRA_FOLDER_CACHE_MS else EXTRA_FOLDER_MISS_MS,
         )
-        Log.d(TAG, "extra folder '$input' anime=${items.size}")
+        Log.d(
+            TAG,
+            "extra folder '$input' anime=${items.size} in=${System.currentTimeMillis() - startedAt}ms",
+        )
         return items
+    }
+
+    private fun expandExtraFolder(folder: PikPakFile, children: List<PikPakFile>): List<CatalogItem> {
+        val childFolders = children.filter { it.kind == KIND_FOLDER }
+        val videos = children.filter {
+            it.kind != KIND_FOLDER &&
+                (isVideoFile(it.name) || it.params?.url?.startsWith("magnet:", ignoreCase = true) == true)
+        }
+        val informativeFolders = childFolders.filterNot { child ->
+            val role = DirectoryAnalyzer.classify(child.name).role
+            role == DirectoryRole.GENERIC || role == DirectoryRole.RELEASE_GROUP || role == DirectoryRole.YEAR
+        }
+        val childRoles = informativeFolders.map { DirectoryAnalyzer.classify(it.name).role }
+        val childFoldersAreSeasons = childRoles.isNotEmpty() && childRoles.all {
+            it == DirectoryRole.SEASON || it == DirectoryRole.PART ||
+                it == DirectoryRole.COUR || it == DirectoryRole.DISC ||
+                it == DirectoryRole.SPECIAL
+        }
+
+        return when {
+            informativeFolders.isEmpty() -> listOf(folder.toCatalogItem(pinned = true))
+            childFoldersAreSeasons -> listOf(folder.toCatalogItem(pinned = true))
+            else -> informativeFolders.map { it.toCatalogItem(pinned = true) } +
+                videos.map { it.toCatalogItem(pinned = true) }
+        }
+    }
+
+    /**
+     * Resolves a configured extra folder and lists its contents.
+     *
+     * The id and name of the folder are remembered, so later loads list the contents straight
+     * away instead of walking the path again. A remembered id that no longer works (the folder was
+     * deleted) falls back to resolving the configured path.
+     */
+    private suspend fun resolveExtraFolder(
+        client: PikPakClient,
+        input: String,
+    ): Pair<PikPakFile, List<PikPakFile>>? {
+        val cachedId = extraFolderIds.get(input)
+        if (cachedId != null) {
+            try {
+                val children = client.listChildren(cachedId)
+                val name = extraFolderNames.get(input).orEmpty()
+                    .ifBlank { input.substringAfterLast('/') }
+                return PikPakFile(id = cachedId, name = name, kind = KIND_FOLDER) to children
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "extra folder '$input' id stale: ${e.message}")
+                extraFolderIds.remove(input)
+                extraFolderNames.remove(input)
+            }
+        }
+
+        val folder = client.resolveFolder(input) ?: return null
+        val children = client.listChildren(folder.id)
+        extraFolderIds.put(input, folder.id)
+        extraFolderNames.put(input, folder.name)
+        return folder to children
     }
 
     private fun extraFolders(): List<String> {
@@ -529,17 +674,20 @@ abstract class PikPak :
     }
 
     private suspend fun catalogPage(items: List<CatalogItem>, page: Int): AnimesPage {
+        val startedAt = System.currentTimeMillis()
         val start = (page - 1) * PAGE_SIZE
-        if (start >= items.size) return AnimesPage(emptyList(), false)
+        if (start >= items.size) {
+            return AnimesPage(if (page == 1) listOf(cloudDownloadAnime()) else emptyList(), false)
+        }
 
         val end = minOf(start + PAGE_SIZE, items.size)
         val pageItems = items.subList(start, end)
 
-        val client = directClient()
         val probeFolders = preferences.getBoolean(PikPakPrefs.FLAT_FOLDERS, true)
         val foldersWithChildren = if (!probeFolders) {
             emptyMap()
         } else {
+            val client = directClient()
             val semaphore = Semaphore(FOLDER_PROBE_CONCURRENCY)
             coroutineScope {
                 pageItems.filter { it.isFolder }.map { item ->
@@ -576,7 +724,26 @@ abstract class PikPak :
             }
         }
 
-        return AnimesPage(animes, end < items.size)
+        val entries = if (page == 1) listOf(cloudDownloadAnime()) + animes else animes
+        // Browsing the source is a good moment to finish renames queued in an earlier session:
+        // they only need the download to be complete, which may have happened while the app was
+        // closed.
+        cloudDownloads.resume()
+        Log.d(
+            TAG,
+            "catalog page=$page items=${animes.size} folders=${foldersWithChildren.size} " +
+                "in=${System.currentTimeMillis() - startedAt}ms",
+        )
+        return AnimesPage(entries, end < items.size)
+    }
+
+    /** Synthetic catalog entry that opens the cloud download dialog when tapped. */
+    private fun cloudDownloadAnime(): SAnime = SAnime.create().apply {
+        title = strings.cloudEntryTitle()
+        url = CLOUD_ENTRY_URL
+        fetch_type = FetchType.Episodes
+        description = strings.cloudEntryDescription()
+        thumbnail_url = FALLBACK_POSTER
     }
 
     /**
@@ -588,34 +755,39 @@ abstract class PikPak :
     private suspend fun folderHasSubfolders(client: PikPakClient, folderId: String): Boolean {
         seasonProbeCache.get(folderId)?.let { return it }
 
-        val has = try {
-            val children = client.listChildren(folderId)
-            CatalogProbe.needsSeasonScreen(
-                folderNames = children.filter { it.kind == KIND_FOLDER }.map { it.name },
-                videoNames = children
-                    .filter { it.kind != KIND_FOLDER && isVideoFile(it.name) }
-                    .map { it.name },
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.d(TAG, "season probe failed folder=$folderId error=${e.message}")
-            true
+        // A folder keeps its layout, and the answer is remembered across app processes, so a
+        // cold catalog start does not probe folders it has already looked at.
+        folderLayouts.get(folderId)?.let { stored ->
+            val hasSeasons = stored == FLAG_TRUE
+            seasonProbeCache.put(folderId, hasSeasons, SEASON_PROBE_CACHE_MS)
+            return hasSeasons
         }
 
-        seasonProbeCache.put(folderId, has, SEASON_PROBE_CACHE_MS)
-        return has
+        return singleFlight(folderId, seasonProbeCache, SEASON_PROBE_CACHE_MS) {
+            try {
+                // One page is enough to tell a season layout from a flat one, and it keeps the
+                // cost of the catalog at a single request per folder.
+                val children = client.listChildrenFirstPage(folderId)
+                CatalogProbe.needsSeasonScreen(
+                    folderNames = children.filter { it.kind == KIND_FOLDER }.map { it.name },
+                    videoNames = children
+                        .filter { it.kind != KIND_FOLDER && isVideoFile(it.name) }
+                        .map { it.name },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "season probe failed folder=$folderId error=${e.message}")
+                true
+            }.also { folderLayouts.put(folderId, if (it) FLAG_TRUE else FLAG_FALSE) }
+        }
     }
 
     // ============================== Library ===============================
 
     private suspend fun libraryFor(itemId: String): Library {
         val key = "${sessionKey()}|$itemId"
-        libraryCache.get(key)?.let { return it }
-
-        val library = directLibrary(itemId)
-        libraryCache.put(key, library, LIBRARY_CACHE_MS)
-        return library
+        return singleFlight(key, libraryCache, LIBRARY_CACHE_MS) { directLibrary(itemId) }
     }
 
     private suspend fun directLibrary(itemId: String): Library {
@@ -891,6 +1063,7 @@ abstract class PikPak :
         deviceId = deviceId(),
         strings = strings,
         tokenStore = tokenStore(),
+        captchaStore = captchaStore(),
         refreshSeed = refreshTokenSeed(),
     ).also { directClientInstance = it }
 
@@ -965,6 +1138,12 @@ abstract class PikPak :
 
     private fun resetClients() {
         resetCatalog()
+        // Drive ids and captchas belong to the session that produced them.
+        myPackId.clear()
+        extraFolderIds.clear()
+        extraFolderNames.clear()
+        folderLayouts.clear()
+        captchaStore().clear()
         directClientInstance = null
     }
 
@@ -976,7 +1155,60 @@ abstract class PikPak :
         streamCache.clear()
     }
 
+    /** Keeps the captcha token on disk so a restarted app can skip minting a new one. */
+    private fun captchaStore(): PikPakClient.CaptchaStore = object : PikPakClient.CaptchaStore {
+        override fun load(): PikPakClient.CaptchaStore.Stored? {
+            val token = preferences.getString(PikPakPrefs.CAPTCHA_TOKEN, "").orEmpty()
+            val action = preferences.getString(PikPakPrefs.CAPTCHA_ACTION, "").orEmpty()
+            val expiresAt = preferences.getLong(PikPakPrefs.CAPTCHA_EXPIRES_AT, 0L)
+            if (token.isBlank() || action.isBlank()) return null
+            return PikPakClient.CaptchaStore.Stored(action, token, expiresAt)
+        }
+
+        override fun save(captcha: PikPakClient.CaptchaStore.Stored) {
+            preferences.edit()
+                .putString(PikPakPrefs.CAPTCHA_TOKEN, captcha.token)
+                .putString(PikPakPrefs.CAPTCHA_ACTION, captcha.action)
+                .putLong(PikPakPrefs.CAPTCHA_EXPIRES_AT, captcha.expiresAt)
+                .apply()
+        }
+
+        override fun clear() {
+            preferences.edit()
+                .remove(PikPakPrefs.CAPTCHA_TOKEN)
+                .remove(PikPakPrefs.CAPTCHA_ACTION)
+                .remove(PikPakPrefs.CAPTCHA_EXPIRES_AT)
+                .apply()
+        }
+    }
+
     // ============================= Utilities ==============================
+
+    /**
+     * Returns the cached value of [key], or loads it once for every request that races for it.
+     *
+     * A source can receive the same request several times while a screen settles (the host may
+     * start a listing more than once). Without this, each of those requests would repeat every
+     * drive call, so the work multiplied with the number of racing requests. Waiters re-check the
+     * cache after the load finishes and reuse its result.
+     */
+    private suspend fun <T> singleFlight(
+        key: String,
+        cache: TtlCache<String, T>,
+        ttlMs: Long,
+        load: suspend () -> T,
+    ): T {
+        cache.get(key)?.let { return it }
+
+        val lock = loadLocks.computeIfAbsent(key) { Mutex() }
+        try {
+            return lock.withLock {
+                cache.get(key) ?: load().also { cache.put(key, it, ttlMs) }
+            }
+        } finally {
+            loadLocks.remove(key, lock)
+        }
+    }
 
     private fun detectedSeasonNumber(season: String): Int? = FilmNameParser.detectedSeasonNumber(season)
 
@@ -1016,6 +1248,7 @@ abstract class PikPak :
                 }
             },
             cloudDownloads = cloudDownloads,
+            cloudUi = cloudUi,
         ).setup(screen)
     }
 
@@ -1061,15 +1294,31 @@ abstract class PikPak :
         private const val SYNTHETIC_SEASON_TITLE = FilmNameParser.SYNTHETIC_SEASON_TITLE
         private const val KIND_FOLDER = "drive#folder"
 
+        private const val CLOUD_ENTRY_URL = "__pikpak_cloud_downloads_v3__"
+        private const val MAX_DESCRIPTION_DOWNLOADS = 15
+
         private const val CATALOG_CACHE_MS = 60_000L
         private const val LIBRARY_CACHE_MS = 60_000L
         private const val EXTRA_FOLDER_CACHE_MS = 10 * 60 * 1000L
         private const val EXTRA_FOLDER_MISS_MS = 60 * 1000L
         private const val SEASON_PROBE_CACHE_MS = 24 * 60 * 60 * 1000L
-        private const val FOLDER_PROBE_CONCURRENCY = 6
+        private const val FOLDER_PROBE_CONCURRENCY = 12
         private const val EXTRA_FOLDER_CONCURRENCY = 4
         private const val METADATA_CONCURRENCY = 4
-        private const val PAGE_SIZE = 100
+
+        // Remembered drive ids and folder layouts outlive the app process. Ids do not change while
+        // a folder exists, so they are kept for a week; the names next to them are refreshed daily
+        // so a renamed extra folder is picked up.
+        private const val DRIVE_ID_CACHE_MS = 7 * 24 * 60 * 60 * 1000L
+        private const val RESOLUTION_CACHE_MS = 24 * 60 * 60 * 1000L
+        private const val LAYOUT_CACHE_MS = 7 * 24 * 60 * 60 * 1000L
+        private const val EMPTY_KEY = "my_pack"
+        private const val FLAG_TRUE = "1"
+        private const val FLAG_FALSE = "0"
+
+        // A catalog page costs one probe per folder it contains, so pages stay small: the host
+        // shows the first page sooner and only the folders the user scrolls to are probed.
+        private const val PAGE_SIZE = 30
         private const val MAX_METADATA_QUERIES = 6
 
         private const val MAX_LIBRARY_ENTRIES = 128

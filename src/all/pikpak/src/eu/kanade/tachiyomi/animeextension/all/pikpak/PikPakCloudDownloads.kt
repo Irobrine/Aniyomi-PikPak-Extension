@@ -42,6 +42,11 @@ internal class PikPakCloudDownloads(
         val progress: Int = 0,
         val message: String? = null,
         val updatedAt: Long = 0L,
+        /** Name the user asked for while the download was still running. */
+        val pendingName: String? = null,
+        /** Folder the user asked for while the download was still running. */
+        val pendingDestination: String? = null,
+        val pendingTries: Int = 0,
     ) {
         val failed: Boolean
             get() = phase == PHASE_ERROR || phase == PHASE_CANCELED
@@ -49,12 +54,27 @@ internal class PikPakCloudDownloads(
         val finished: Boolean
             get() = failed || phase == PHASE_COMPLETE
 
+        /** True while an edit waits for the download to finish. */
+        val hasPendingEdit: Boolean
+            get() = !pendingName.isNullOrBlank() || !pendingDestination.isNullOrBlank()
+
         /** 0..100 for the progress line; a completed task always reads as full. */
         val percent: Int
             get() = when {
                 phase == PHASE_COMPLETE -> 100
                 else -> progress.coerceIn(0, 100)
             }
+    }
+
+    /** What happened to an edit request. */
+    enum class EditOutcome {
+        /** Applied to the file right away (it had already finished). */
+        APPLIED,
+
+        /** The download is still running, so the edit is applied when it finishes. */
+        QUEUED,
+
+        FAILED,
     }
 
     private val json = Json {
@@ -77,7 +97,20 @@ internal class PikPakCloudDownloads(
     fun watch(listener: (List<Record>) -> Unit, isVisible: () -> Boolean) {
         this.listener = listener
         this.isVisible = isVisible
-        if (load().any { !it.finished }) startPolling()
+        // Restart on purpose: a reopened settings page must be watched immediately.
+        if (load().any { !it.finished || it.hasPendingEdit }) startPolling()
+    }
+
+    /**
+     * Applies queued edits and follows unfinished downloads.
+     *
+     * Called whenever the cloud download UI opens, so a rename asked for in an earlier session is
+     * written once the download it belongs to has finished. Unlike [watch], an already running
+     * poller is left alone so a burst of calls does not reset its backoff.
+     */
+    fun resume() {
+        if (pollJob?.isActive == true) return
+        if (load().any { !it.finished || it.hasPendingEdit }) startPolling()
     }
 
     fun destination(): String = preferences.getString(PikPakPrefs.CLOUD_DESTINATION, "").orEmpty()
@@ -101,8 +134,11 @@ internal class PikPakCloudDownloads(
     /**
      * Resolves [destination] once, then hands every link to PikPak one by one so each accepted
      * link shows up immediately. Failures are recorded per link instead of aborting the batch.
+     *
+     * [names] holds the name typed for each link, by position; PikPak only exposes a file when
+     * its task finishes, so a name is stored on the record and applied then.
      */
-    fun submit(links: List<String>, destination: String) {
+    fun submit(links: List<String>, destination: String, names: List<String?> = emptyList()) {
         if (links.isEmpty()) return
         saveDestination(destination)
 
@@ -125,7 +161,7 @@ internal class PikPakCloudDownloads(
 
             Log.d(TAG, "cloud submit links=${links.size} destination=${folder.name} id=${folder.id}")
             var accepted = 0
-            for (link in links) {
+            for ((index, link) in links.withIndex()) {
                 val record = try {
                     val task = client.addCloudDownload(link, folder.id)
                     accepted++
@@ -139,6 +175,7 @@ internal class PikPakCloudDownloads(
                         progress = task.progress.coerceIn(0, 100),
                         message = task.message?.takeIf { it.isNotBlank() },
                         updatedAt = now(),
+                        pendingName = names.getOrNull(index)?.trim()?.takeIf { it.isNotEmpty() },
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -162,28 +199,37 @@ internal class PikPakCloudDownloads(
     }
 
     /**
-     * Edits a finished download: renames it and/or moves it to [newDestination]. Each successful
-     * step is stored immediately so the row stays truthful if a later step fails.
+     * Renames the download and/or moves it to [newDestination].
+     *
+     * PikPak only exposes the file once its task has produced one, so an edit on a download that
+     * is still running is remembered on the record and applied as soon as it finishes. Finished
+     * downloads are edited right away, and each successful step is stored immediately so the row
+     * stays truthful if a later step fails.
      */
     fun edit(
         record: Record,
         newName: String,
         newDestination: String,
-        onResult: (Boolean, String?) -> Unit,
+        onResult: (EditOutcome, String?) -> Unit,
     ) {
-        val fileId = record.fileId
-        if (fileId.isBlank()) {
-            onResult(false, null)
+        val name = newName.trim()
+        val destination = newDestination.trim()
+
+        if (record.failed) {
+            main.post { onResult(EditOutcome.FAILED, record.message) }
             return
         }
 
-        val name = newName.trim()
-        val destination = newDestination.trim()
+        if (record.phase != PHASE_COMPLETE || record.fileId.isBlank()) {
+            queueEdit(record, name, destination, onResult)
+            return
+        }
+
         val rename = name.isNotBlank() && name != record.name
         val move = destination.isNotBlank() && destination != record.destination
 
         if (!rename && !move) {
-            main.post { onResult(true, null) }
+            main.post { onResult(EditOutcome.APPLIED, null) }
             return
         }
 
@@ -192,30 +238,72 @@ internal class PikPakCloudDownloads(
                 val client = clientProvider()
 
                 if (rename) {
-                    val saved = client.renameFile(fileId, name)
-                    updateRecord(record) { it.copy(name = saved, updatedAt = now()) }
+                    val saved = client.renameFile(record.fileId, name)
+                    updateRecord(record) {
+                        it.copy(name = saved, pendingName = null, pendingTries = 0, updatedAt = now())
+                    }
                 }
 
                 if (move) {
                     val target = client.resolveFolder(destination)
                         ?: throw IOException(strings.folderMissing(destination))
-                    client.moveFile(fileId, target.id)
+                    client.moveFile(record.fileId, target.id)
                     updateRecord(record) {
-                        it.copy(destination = target.name.ifBlank { destination }, updatedAt = now())
+                        it.copy(
+                            destination = target.name.ifBlank { destination },
+                            pendingDestination = null,
+                            pendingTries = 0,
+                            updatedAt = now(),
+                        )
                     }
                 }
 
                 onFilesChanged()
-                true to null
+                EditOutcome.APPLIED to null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.d(TAG, "cloud edit failed: ${e.message}")
-                false to e.message
+                EditOutcome.FAILED to e.message
             }
 
             main.post { onResult(result.first, result.second) }
         }
+    }
+
+    /**
+     * Stores an edit for a download that has not finished yet.
+     *
+     * The user can name the download while it runs; the name is shown on the row straight away and
+     * written to the file once PikPak reports the task as complete.
+     */
+    private fun queueEdit(
+        record: Record,
+        name: String,
+        destination: String,
+        onResult: (EditOutcome, String?) -> Unit,
+    ) {
+        val currentName = record.pendingName?.takeIf { it.isNotBlank() } ?: record.name
+        val currentDestination = record.pendingDestination?.takeIf { it.isNotBlank() } ?: record.destination
+        val pendingName = name.takeIf { it.isNotBlank() && it != currentName }
+        val pendingDestination = destination.takeIf { it.isNotBlank() && it != currentDestination }
+
+        if (pendingName == null && pendingDestination == null) {
+            main.post { onResult(EditOutcome.APPLIED, null) }
+            return
+        }
+
+        updateRecord(record) {
+            it.copy(
+                pendingName = pendingName ?: it.pendingName,
+                pendingDestination = pendingDestination ?: it.pendingDestination,
+                pendingTries = 0,
+                updatedAt = now(),
+            )
+        }
+        Log.d(TAG, "cloud edit queued url=${record.url} name=${pendingName.orEmpty()}")
+        startPolling()
+        main.post { onResult(EditOutcome.QUEUED, null) }
     }
 
     private fun updateRecord(record: Record, transform: (Record) -> Record) {
@@ -256,15 +344,32 @@ internal class PikPakCloudDownloads(
         pollJob = scope.launch {
             var rounds = 0
             var hiddenRounds = 0
+            var pendingSince: Long? = null
 
             while (isActive) {
                 val records = load()
-                if (records.none { !it.finished }) break
+                val active = records.any { !it.finished }
+                val pending = records.any { it.hasPendingEdit }
+                if (!active && !pending) break
+
+                if (pending) {
+                    if (pendingSince == null) pendingSince = now()
+                } else {
+                    pendingSince = null
+                }
 
                 if (isVisible()) {
                     hiddenRounds = 0
-                } else if (++hiddenRounds > HIDDEN_ROUNDS) {
+                } else if (!pending && ++hiddenRounds > HIDDEN_ROUNDS) {
                     Log.d(TAG, "cloud polling paused while the settings screen is away")
+                    break
+                }
+
+                // A queued edit is worth waiting for, but only for a bounded time in the
+                // background; it is reapplied the next time the cloud download UI opens.
+                val waitingForEdit = !isVisible() && pending
+                if (waitingForEdit && now() - (pendingSince ?: now()) > PENDING_WATCH_MS) {
+                    Log.d(TAG, "cloud polling paused while an edit waits for the download")
                     break
                 }
 
@@ -275,17 +380,26 @@ internal class PikPakCloudDownloads(
                 }
 
                 rounds++
-                delay(pollInterval(rounds))
+                val wait = if (waitingForEdit) maxOf(pollInterval(rounds), HIDDEN_POLL_MS) else pollInterval(rounds)
+                delay(wait)
             }
         }
     }
 
-    /** Applies the newest task state, falling back to the file when PikPak dropped finished tasks. */
+    /** Applies the newest task state, then any edits queued for finished downloads. */
     private suspend fun refresh(records: List<Record>): List<Record> {
-        val active = records.filter { !it.finished }
-        if (active.none { it.taskId.isNotBlank() || it.fileId.isNotBlank() }) return records
+        val active = records.any { !it.finished }
+        if (!active && records.none { it.hasPendingEdit }) return records
 
         val client = clientProvider()
+        val refreshed = if (active) refreshTasks(client, records) else records
+        return applyPendingEdits(client, refreshed)
+    }
+
+    /** Applies the newest task state, falling back to the file when PikPak dropped finished tasks. */
+    private suspend fun refreshTasks(client: PikPakClient, records: List<Record>): List<Record> {
+        val active = records.filter { !it.finished }
+        if (active.none { it.taskId.isNotBlank() || it.fileId.isNotBlank() }) return records
         val tasks = try {
             client.listCloudTasks()
         } catch (e: CancellationException) {
@@ -343,6 +457,98 @@ internal class PikPakCloudDownloads(
         }
     }
 
+    /**
+     * Writes edits that were queued while a download was running.
+     *
+     * Called from the poller and whenever the cloud download UI opens, so an edit survives the app
+     * being closed before the download finished.
+     */
+    private suspend fun applyPendingEdits(client: PikPakClient, records: List<Record>): List<Record> {
+        if (records.none { it.finished && it.hasPendingEdit }) return records
+
+        var changed = false
+        val updated = records.map { record ->
+            if (!record.finished || !record.hasPendingEdit) return@map record
+            val edited = applyEdit(client, record)
+            if (edited != record) changed = true
+            edited
+        }
+        if (changed) onFilesChanged()
+        return if (changed) updated else records
+    }
+
+    private suspend fun applyEdit(client: PikPakClient, record: Record): Record {
+        // A failed download never produces a file, so there is nothing to rename or move.
+        if (record.failed) {
+            return record.copy(pendingName = null, pendingDestination = null, pendingTries = 0)
+        }
+
+        // The file id usually arrives with the completed task; wait a few polls for it instead of
+        // dropping the edit.
+        if (record.fileId.isBlank()) {
+            Log.d(TAG, "queued edit waits for the file id url=${record.url}")
+            return retryPending(record)
+        }
+
+        var updated = record
+        var failed = false
+
+        val name = record.pendingName?.takeIf { it.isNotBlank() }
+        if (name != null) {
+            val saved = try {
+                client.renameFile(record.fileId, name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "queued rename failed file=${record.fileId}: ${e.message}")
+                null
+            }
+            if (saved == null) {
+                failed = true
+            } else {
+                Log.d(TAG, "queued rename applied file=${record.fileId} name=$saved")
+                updated = updated.copy(name = saved, pendingName = null, pendingTries = 0, updatedAt = now())
+            }
+        }
+
+        val destination = record.pendingDestination?.takeIf { it.isNotBlank() }
+        if (!failed && destination != null) {
+            try {
+                val target = client.resolveFolder(destination)
+                    ?: throw IOException(strings.folderMissing(destination))
+                client.moveFile(record.fileId, target.id)
+                Log.d(TAG, "queued move applied file=${record.fileId} folder=${target.name}")
+                updated = updated.copy(
+                    destination = target.name.ifBlank { destination },
+                    pendingDestination = null,
+                    updatedAt = now(),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "queued move failed file=${record.fileId}: ${e.message}")
+                failed = true
+            }
+        }
+
+        if (!failed) return updated
+
+        return retryPending(updated)
+    }
+
+    /** Counts a failed attempt and drops the edit after a few tries. */
+    private fun retryPending(record: Record): Record {
+        // Give up after a few tries instead of polling forever; the row stays editable, so the
+        // user can retry from the dialog.
+        val tries = record.pendingTries + 1
+        return if (tries >= MAX_PENDING_TRIES) {
+            Log.d(TAG, "dropping queued edit after $tries attempts file=${record.fileId}")
+            record.copy(pendingName = null, pendingDestination = null, pendingTries = 0, updatedAt = now())
+        } else {
+            record.copy(pendingTries = tries, updatedAt = now())
+        }
+    }
+
     private fun notify(records: List<Record>) {
         val callback = listener ?: return
         main.post { callback(records) }
@@ -379,8 +585,13 @@ internal class PikPakCloudDownloads(
         private const val FAST_POLL_MS = 3_000L
         private const val MEDIUM_POLL_MS = 10_000L
         private const val SLOW_POLL_MS = 30_000L
+        private const val HIDDEN_POLL_MS = 60_000L
         private const val FAST_ROUNDS = 20
         private const val MEDIUM_ROUNDS = 40
         private const val HIDDEN_ROUNDS = 2
+
+        /** How long a queued edit keeps the poller alive while the UI is away. */
+        private const val PENDING_WATCH_MS = 30 * 60 * 1000L
+        private const val MAX_PENDING_TRIES = 3
     }
 }

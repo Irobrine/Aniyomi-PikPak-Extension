@@ -551,6 +551,37 @@ class EpisodeOrderingTest {
     }
 
     @Test
+    fun `episode names drop release versions`() {
+        val numbered = EpisodeOrdering.numberBySeason(
+            listOf(
+                record("Show S01E05v2.mkv", season = "Season 1", episode = 5.0, version = 2),
+                record("Show S01E06v03.mkv", season = "Season 1", episode = 6.0, version = 3),
+            ),
+        )
+
+        assertEquals(
+            listOf("E05", "E06"),
+            numbered.map { EpisodeOrdering.displayName(it) },
+        )
+        assertEquals(
+            listOf("Season 1 E05", "Season 1 E06"),
+            numbered.map { EpisodeOrdering.displayName(it, includeSeason = true) },
+        )
+    }
+
+    @Test
+    fun `versions still order alternate releases`() {
+        val numbered = EpisodeOrdering.numberBySeason(
+            listOf(
+                record("Show E01 v2.mkv", episode = 1.0, version = 2),
+                record("Show E01 v1.mkv", episode = 1.0, version = 1),
+            ),
+        )
+
+        assertEquals(listOf("Show E01 v1.mkv", "Show E01 v2.mkv"), numbered.map { it.record.fileName })
+    }
+
+    @Test
     fun `numbers a folder without detected numbers from one`() {
         val numbered = EpisodeOrdering.numberBySeason(
             listOf(record("b.mkv"), record("a.mkv")),

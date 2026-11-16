@@ -11,4 +11,5 @@ apk/
 gen
 generated-src/
 .kotlin
+.opencode/
 *.jks
