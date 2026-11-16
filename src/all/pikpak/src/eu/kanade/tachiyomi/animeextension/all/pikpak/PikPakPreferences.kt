@@ -1,24 +1,37 @@
 package eu.kanade.tachiyomi.animeextension.all.pikpak
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.Dialog
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.util.Log
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.Preference
+import androidx.preference.PreferenceCategory
+import androidx.preference.PreferenceGroup
 import androidx.preference.PreferenceScreen
+import androidx.preference.PreferenceViewHolder
 import androidx.preference.SwitchPreferenceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,8 +53,13 @@ internal class PikPakPreferences(
     private val onSessionChanged: () -> Unit,
     private val onCatalogChanged: () -> Unit,
     private val checkExtraFolders: suspend (List<String>) -> List<Pair<String, Int?>>,
+    private val cloudDownloads: PikPakCloudDownloads,
 ) {
     private val strings = PikPakStrings.get()
+
+    private var downloadCategory: PreferenceCategory? = null
+    private val downloadRows = mutableListOf<CloudDownloadRow>()
+    private var renderedIds: List<String> = emptyList()
 
     fun setup(screen: PreferenceScreen) {
         val context = screen.context
@@ -57,15 +75,29 @@ internal class PikPakPreferences(
 
         if (loggedIn) {
             screen.addRow(strings.logoutTitle(), strings.logoutSummary()) {
-                logout(screen)
+                confirmLogout(screen)
                 true
             }
         }
 
-        screen.addRow(strings.infoFolderTitle(), strings.infoFolderSummary())
-        screen.addRow(strings.infoSeasonTitle(), strings.infoSeasonSummary())
-        screen.addRow(strings.infoEpisodeTitle(), strings.infoEpisodeSummary())
-        screen.addRow(strings.infoMetadataTitle(), strings.infoMetadataSummary())
+        screen.addRow(strings.cloudTitle(), strings.cloudSummary()) {
+            showCloudDownloadDialog(context)
+            true
+        }
+
+        // Add the category to the screen before adding rows: a group needs a PreferenceManager
+        // before it can accept children, otherwise addPreference crashes on a null manager.
+        val cloudCategory = PreferenceCategory(context).apply {
+            title = strings.cloudSectionTitle()
+        }
+        screen.addPreference(cloudCategory)
+        downloadCategory = cloudCategory
+
+        renderDownloads(cloudDownloads.load())
+        cloudDownloads.watch(::renderDownloads) {
+            // Polling pauses once the settings page is no longer on screen; reopening resumes it.
+            downloadRows.any { it.isOnScreen }
+        }
 
         SwitchPreferenceCompat(context).apply {
             key = PikPakPrefs.TORRENTS
@@ -166,6 +198,11 @@ internal class PikPakPreferences(
                 true
             }
         }.also(screen::addPreference)
+
+        screen.addRow(strings.infoFolderTitle(), strings.infoFolderSummary())
+        screen.addRow(strings.infoSeasonTitle(), strings.infoSeasonSummary())
+        screen.addRow(strings.infoEpisodeTitle(), strings.infoEpisodeSummary())
+        screen.addRow(strings.infoMetadataTitle(), strings.infoMetadataSummary())
     }
 
     // =============================== Session ==============================
@@ -262,12 +299,41 @@ internal class PikPakPreferences(
             webViewClient = WebViewClient()
         }
 
+        // The login page is full screen, so pad the container by the current system bar insets
+        // instead of letting the page start underneath the status bar. Platform APIs are used
+        // because the host app may strip unused androidx.core methods.
+        val container = FrameLayout(activity).apply { addView(webView) }
+        container.setOnApplyWindowInsetsListener { view, insets ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                view.setPadding(
+                    insets.systemWindowInsetLeft,
+                    insets.systemWindowInsetTop,
+                    insets.systemWindowInsetRight,
+                    insets.systemWindowInsetBottom,
+                )
+            }
+            insets
+        }
+
         val dialog = Dialog(activity, android.R.style.Theme_DeviceDefault_Light_NoActionBar)
-        dialog.setContentView(webView)
-        dialog.window?.setLayout(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        )
+        dialog.setContentView(container)
+        dialog.window?.let { window ->
+            window.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            // Handle the status/navigation bar insets ourselves so the page cannot draw under them.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                @Suppress("DEPRECATION")
+                window.setDecorFitsSystemWindows(false)
+            }
+        }
 
         val handler = Handler(Looper.getMainLooper())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -335,6 +401,12 @@ internal class PikPakPreferences(
             }
         }
 
+        dialog.setOnShowListener {
+            // Insets are dispatched once the dialog window is attached; re-request them so the
+            // initial layout already has the status bar margin.
+            container.requestApplyInsets()
+        }
+
         dialog.setOnDismissListener {
             handler.removeCallbacksAndMessages(null)
             scope.cancel()
@@ -378,7 +450,235 @@ internal class PikPakPreferences(
         }
     }
 
-    private fun PreferenceScreen.addRow(
+    // =========================== Cloud downloads ==========================
+
+    /**
+     * The add dialog: links (one per line) and the destination folder, which works like the
+     * extra-folders field. Download submits in the background and closes the dialog.
+     */
+    private fun showCloudDownloadDialog(context: Context) {
+        val activity = context.findActivity()
+        if (activity == null) {
+            Toast.makeText(context, strings.loginFailed(), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val padding = (CLOUD_DIALOG_PADDING_DP * activity.resources.displayMetrics.density).toInt()
+        val linksInput = EditText(activity).apply {
+            hint = strings.cloudLinksHint()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            gravity = Gravity.TOP or Gravity.START
+            minLines = CLOUD_LINKS_MIN_LINES
+            maxLines = CLOUD_LINKS_MAX_LINES
+        }
+        val destinationInput = EditText(activity).apply {
+            hint = strings.cloudDestinationHint()
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(cloudDownloads.destination().ifBlank { strings.cloudDestinationHint() })
+            setSelection(text.length)
+        }
+
+        val layout = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, 0)
+            addView(fieldLabel(activity, strings.cloudLinksLabel()))
+            addView(linksInput)
+            addView(
+                fieldLabel(activity, strings.cloudDestinationLabel()).apply {
+                    setPadding(0, padding / 2, 0, 0)
+                },
+            )
+            addView(destinationInput)
+        }
+
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle(strings.cloudTitle())
+            .setView(ScrollView(activity).apply { addView(layout) })
+            .setNegativeButton(strings.cloudCancelAction(), null)
+            .setPositiveButton(strings.cloudDownloadAction(), null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { dialog.dismiss() }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val links = PikPakPrefs.parseCloudLinks(linksInput.text.toString())
+                if (links.isEmpty()) {
+                    Toast.makeText(activity, strings.cloudLinksEmpty(), Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+
+                val destination = destinationInput.text.toString().trim()
+                    .ifBlank { strings.cloudDestinationHint() }
+                cloudDownloads.submit(links, destination)
+                Toast.makeText(activity, strings.cloudQueued(links.size), Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+        }
+
+        dialog.show()
+    }
+
+    /** Renders the persisted downloads as rows of the cloud download category. */
+    private fun renderDownloads(records: List<PikPakCloudDownloads.Record>) {
+        val category = downloadCategory ?: return
+        if (records.isEmpty()) {
+            downloadRows.forEach(category::removePreference)
+            downloadRows.clear()
+            renderedIds = emptyList()
+            return
+        }
+
+        if (!sameRecords(records)) {
+            downloadRows.forEach(category::removePreference)
+            downloadRows.clear()
+
+            records.forEach {
+                CloudDownloadRow(category.context).apply {
+                    setOnPreferenceClickListener {
+                        val current = record
+                        if (current != null &&
+                            current.phase == PikPakCloudDownloads.PHASE_COMPLETE &&
+                            current.fileId.isNotBlank()
+                        ) {
+                            showEditDialog(category.context, current)
+                        }
+                        true
+                    }
+                }.also { row ->
+                    category.addPreference(row)
+                    downloadRows += row
+                }
+            }
+            renderedIds = records.map { it.identity() }
+        }
+
+        records.forEachIndexed { index, record ->
+            downloadRows.getOrNull(index)?.let { bindDownloadRow(it, record) }
+        }
+    }
+
+    private fun sameRecords(records: List<PikPakCloudDownloads.Record>): Boolean = renderedIds == records.map { it.identity() }
+
+    private fun PikPakCloudDownloads.Record.identity(): String = "$taskId|$url"
+
+    private fun bindDownloadRow(row: CloudDownloadRow, record: PikPakCloudDownloads.Record) {
+        row.record = record
+        // Finished rows are tappable to rename the downloaded folder or video.
+        row.isSelectable = record.phase == PikPakCloudDownloads.PHASE_COMPLETE && record.fileId.isNotBlank()
+        row.title = downloadTitle(record)
+        row.summary = downloadSummary(record)
+    }
+
+    /** Edit dialog for a finished download: rename it and/or move it to another folder. */
+    private fun showEditDialog(context: Context, record: PikPakCloudDownloads.Record) {
+        val activity = context.findActivity()
+        if (activity == null) {
+            Toast.makeText(context, strings.loginFailed(), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val padding = (CLOUD_DIALOG_PADDING_DP * activity.resources.displayMetrics.density).toInt()
+        val nameInput = EditText(activity).apply {
+            hint = strings.cloudRenameLabel()
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(record.name.ifBlank { PikPakPrefs.cloudLinkLabel(record.url).orEmpty() })
+            setSelection(0, text.length)
+        }
+        val folderInput = EditText(activity).apply {
+            hint = strings.cloudDestinationHint()
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(record.destination)
+            setSelection(text.length)
+        }
+
+        val layout = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, 0)
+            addView(fieldLabel(activity, strings.cloudRenameLabel()))
+            addView(nameInput)
+            addView(
+                fieldLabel(activity, strings.cloudEditFolderLabel()).apply {
+                    setPadding(0, padding / 2, 0, 0)
+                },
+            )
+            addView(folderInput)
+        }
+
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle(strings.cloudEditTitle())
+            .setView(ScrollView(activity).apply { addView(layout) })
+            .setNegativeButton(strings.cloudCancelAction(), null)
+            .setPositiveButton(strings.cloudEditAction(), null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { dialog.dismiss() }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = nameInput.text.toString().trim()
+                if (name.isBlank()) {
+                    Toast.makeText(activity, strings.cloudRenameEmpty(), Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+
+                val folder = folderInput.text.toString().trim()
+                dialog.dismiss()
+                cloudDownloads.edit(record, name, folder) { updated, error ->
+                    val message = when {
+                        updated -> strings.cloudEdited()
+                        !error.isNullOrBlank() -> error
+                        else -> strings.cloudEditFailed()
+                    }
+                    Toast.makeText(activity.applicationContext, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    /** Logging out destroys the saved session, so it always asks first. */
+    private fun confirmLogout(screen: PreferenceScreen) {
+        AlertDialog.Builder(screen.context)
+            .setTitle(strings.logoutTitle())
+            .setMessage(strings.logoutConfirmMessage())
+            .setNegativeButton(strings.cloudCancelAction(), null)
+            .setPositiveButton(strings.logoutAction()) { _, _ -> logout(screen) }
+            .show()
+    }
+
+    private fun downloadTitle(record: PikPakCloudDownloads.Record): String {
+        record.name.takeIf { it.isNotBlank() }?.let { return it }
+        PikPakPrefs.cloudLinkLabel(record.url)?.let { return it }
+        return if (record.url.startsWith("magnet:", ignoreCase = true)) {
+            strings.cloudMagnetLink()
+        } else {
+            strings.cloudUnknownLink()
+        }
+    }
+
+    private fun downloadSummary(record: PikPakCloudDownloads.Record): String {
+        val destination = record.destination.ifBlank { strings.cloudDestinationHint() }
+        val state = when {
+            record.failed -> {
+                val message = record.message?.takeIf { it.isNotBlank() }
+                if (message == null) strings.cloudFailed() else "${strings.cloudFailed()}: $message"
+            }
+            record.phase == PikPakCloudDownloads.PHASE_COMPLETE -> strings.cloudComplete()
+            record.percent > 0 -> strings.cloudProgress(record.percent)
+            else -> strings.cloudPending()
+        }
+        return "$state · $destination"
+    }
+
+    private fun fieldLabel(context: Context, text: String): TextView = TextView(context).apply {
+        this.text = text
+        textSize = CLOUD_LABEL_TEXT_SIZE_SP
+    }
+
+    private fun PreferenceGroup.addRow(
         rowTitle: String,
         rowSummary: String,
         onClick: (() -> Boolean)? = null,
@@ -391,12 +691,36 @@ internal class PikPakPreferences(
         addPreference(row)
     }
 
+    /** A download row; the view binding tells the poller whether the settings page is on screen. */
+    private class CloudDownloadRow(context: Context) : Preference(context) {
+        var record: PikPakCloudDownloads.Record? = null
+        private var boundView: View? = null
+
+        init {
+            isPersistent = false
+            isSelectable = false
+        }
+
+        override fun onBindViewHolder(holder: PreferenceViewHolder) {
+            super.onBindViewHolder(holder)
+            boundView = holder.itemView
+        }
+
+        val isOnScreen: Boolean
+            get() = boundView?.isShown == true && boundView?.isAttachedToWindow == true
+    }
+
     companion object {
         private const val TAG = "PikPak"
 
         private const val WEB_LOGIN_URL = "https://mypikpak.com/"
         private const val WEB_LOGIN_POLL_MS = 1_500L
         private const val LOGIN_HINT_MS = 25_000L
+
+        private const val CLOUD_DIALOG_PADDING_DP = 20
+        private const val CLOUD_LINKS_MIN_LINES = 4
+        private const val CLOUD_LINKS_MAX_LINES = 8
+        private const val CLOUD_LABEL_TEXT_SIZE_SP = 14f
 
         // Only read storage on PikPak's own origin, and prefer the credentials entry.
         private const val READ_CREDENTIALS_JS =

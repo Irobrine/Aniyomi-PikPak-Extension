@@ -38,6 +38,13 @@ internal class PikPakStrings private constructor(private val resources: Resource
         "Forget the saved session and sign out of the PikPak page. Your files are not touched.",
     )
 
+    fun logoutConfirmMessage(): String = get(
+        R.string.pikpak_logout_confirm_message,
+        "Forget the saved PikPak session? Your files are not touched.",
+    )
+
+    fun logoutAction(): String = get(R.string.pikpak_logout_action, "Log out")
+
     fun statusTitle(): String = get(R.string.pikpak_status_title, "Session")
 
     fun statusLoggedOut(): String = get(R.string.pikpak_status_logged_out, "Not logged in.")
@@ -69,17 +76,15 @@ internal class PikPakStrings private constructor(private val resources: Resource
 
     fun infoSeasonSummary(): String = get(
         R.string.pikpak_info_season_summary,
-        "Use names like \"Season 1\" or \"S01\" to get \"Anime S01\", or any label such as " +
-            "\"Dear Sister\" to get \"Anime Dear Sister\". Both are matched against the API separately.",
+        "Sub-folders inside an anime folder become seasons, and each season name is matched " +
+            "against the API separately.",
     )
 
     fun infoEpisodeTitle(): String = get(R.string.pikpak_info_episode_title, "Episode files")
 
     fun infoEpisodeSummary(): String = get(
         R.string.pikpak_info_episode_summary,
-        "Numbers in E09, \"- 09\", [09] or \"Episode 9\" are detected; files without a number are " +
-            "numbered in name order. Keep release group and quality tags out of anime folder names " +
-            "so the API match is accurate.",
+        "Episode numbers are read from file names. Files without a number are numbered in name order.",
     )
 
     fun infoMetadataTitle(): String = get(R.string.pikpak_info_metadata_title, "Metadata")
@@ -173,6 +178,95 @@ internal class PikPakStrings private constructor(private val resources: Resource
     fun tmdbSummary(): String = get(
         R.string.pikpak_tmdb_summary,
         "Used when AniList has no match, especially for movies and TV shows.",
+    )
+
+    // ========================== Cloud downloads ===========================
+
+    fun cloudTitle(): String = get(R.string.pikpak_cloud_title, "Add Cloud Download")
+
+    fun cloudSectionTitle(): String = get(R.string.pikpak_cloud_section, "Cloud downloads")
+
+    fun cloudSummary(): String = get(
+        R.string.pikpak_cloud_summary,
+        "Send magnet or video links to PikPak and follow their progress here.",
+    )
+
+    fun cloudLinksLabel(): String = get(R.string.pikpak_cloud_links_label, "Links")
+
+    fun cloudLinksHint(): String = get(R.string.pikpak_cloud_links_hint, "One link per line")
+
+    fun cloudDestinationLabel(): String = get(R.string.pikpak_cloud_destination_label, "Download to")
+
+    fun cloudDestinationHint(): String = get(R.string.pikpak_cloud_destination_hint, "My Pack")
+
+    fun cloudDownloadAction(): String = get(R.string.pikpak_cloud_download, "Download")
+
+    fun cloudCancelAction(): String = get(R.string.pikpak_cloud_cancel, "Cancel")
+
+    fun cloudLinksEmpty(): String = get(R.string.pikpak_cloud_links_empty, "Add at least one link.")
+
+    fun cloudQueued(count: Int): String = get(
+        R.string.pikpak_cloud_queued,
+        "Adding %1\$d download(s)…",
+        count,
+    )
+
+    fun cloudPending(): String = get(R.string.pikpak_cloud_pending, "Queued")
+
+    fun cloudProgress(percent: Int): String = get(
+        R.string.pikpak_cloud_progress,
+        "Downloading %1\$d%%",
+        percent,
+    )
+
+    fun cloudComplete(): String = get(R.string.pikpak_cloud_complete, "Download complete")
+
+    fun cloudFailed(): String = get(R.string.pikpak_cloud_failed, "Download failed")
+
+    fun cloudUnknownLink(): String = get(R.string.pikpak_cloud_unknown_link, "Link")
+
+    fun cloudMagnetLink(): String = get(R.string.pikpak_cloud_magnet_link, "Magnet link")
+
+    fun cloudDownloadFailed(code: Int, reason: String): String = get(
+        R.string.pikpak_cloud_download_failed,
+        "PikPak rejected the link (HTTP %1\$d): %2\$s",
+        code,
+        reason,
+    )
+
+    fun cloudRenameLabel(): String = get(R.string.pikpak_cloud_rename_label, "Name")
+
+    fun cloudEditTitle(): String = get(R.string.pikpak_cloud_edit_title, "Edit Download")
+
+    fun cloudEditAction(): String = get(R.string.pikpak_cloud_edit_action, "Save")
+
+    fun cloudEditFolderLabel(): String = get(
+        R.string.pikpak_cloud_edit_folder_label,
+        "Folder (ID or path)",
+    )
+
+    fun cloudRenameEmpty(): String = get(R.string.pikpak_cloud_rename_empty, "Enter a name.")
+
+    fun cloudEdited(): String = get(R.string.pikpak_cloud_edited, "Download updated")
+
+    fun cloudEditFailed(): String = get(R.string.pikpak_cloud_edit_failed, "Could not update the download.")
+
+    fun renameFailed(reason: String): String = get(
+        R.string.pikpak_error_rename_failed,
+        "PikPak could not rename the download: %1\$s",
+        reason,
+    )
+
+    fun moveFailed(reason: String): String = get(
+        R.string.pikpak_error_move_failed,
+        "PikPak could not move the download: %1\$s",
+        reason,
+    )
+
+    fun folderMissing(input: String): String = get(
+        R.string.pikpak_error_folder_missing,
+        "Folder not found: %1\$s",
+        input,
     )
 
     // =============================== Toasts ================================

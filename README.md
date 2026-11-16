@@ -33,6 +33,8 @@ StremThru, Real-Debrid or other intermediary service.
   rejected as episode numbers. Files without a number are numbered in name order.
 - **Classification** — folders and files are classified as series, movie, episode, special, OVA,
   ONA or short, so single movies and specials do not look like ordinary seasons.
+- **Cloud downloads** — paste magnet or video links in the settings and PikPak downloads them to
+  your drive; progress stays visible while the transfer runs on PikPak's servers.
 - **Direct playback** — episodes resolve to PikPak's own stream links.
 
 ## Requirements
@@ -74,17 +76,18 @@ The login page is the only way to authenticate — there is no password or token
 Because that web page is destroyed after the import, nothing else rotates the token: the extension
 refreshes and stores it on its own from then on, so the login is a one-time step.
 
-The session is kept until PikPak invalidates it or you tap **Log out of PikPak**. Logging out also
-clears the PikPak page session, so the next login starts signed out. If the session becomes invalid,
-the extension reports that it was rejected and asks you to log in again; a stale token found in the
-browser storage is never imported.
+The session is kept until PikPak invalidates it or you tap **Log out of PikPak** and confirm.
+Logging out also clears the PikPak page session, so the next login starts signed out. If the session
+becomes invalid, the extension reports that it was rejected and asks you to log in again; a stale
+token found in the browser storage is never imported.
 
 The **Session** row shows whether you are logged in and how long the current link is valid.
 
 Extension settings survive updates, so reinstalling over an older build keeps you logged in. Session
 tokens are encrypted with a key that stays in the Android Keystore.
 
-Quota: the extension only reads your drive and generates playback links; it never uploads or deletes.
+Quota: the extension only reads your drive, adds the links you submit as cloud downloads, and
+generates playback links; it never uploads your local files or deletes anything.
 
 ### Extra folders
 
@@ -101,6 +104,22 @@ Values written by older versions (comma separated) are converted automatically o
 The anime folders inside them appear at the top of the catalog. Paths are matched by name and are
 case-insensitive; a folder with no sub-folders is kept as a single entry. **Check extra folders**
 resolves the configured entries and reports how many anime each one contains.
+
+### Cloud downloads
+
+**PikPak → Add Cloud Download** sends links to PikPak's offline downloader:
+
+- **Links** accepts one link per line — magnets, direct file URLs and links PikPak itself supports,
+  such as share links.
+- **Download to** is a folder ID or path like the extra-folders field. It defaults to `My Pack`, and
+  an unknown path falls back to `My Pack` instead of failing the download.
+
+**Download** closes the dialog and submits the links in the background. Each link becomes a row under
+**Cloud downloads** showing its progress, and the row changes to *Download complete* or an error
+message when the transfer finishes. Tap a completed row to rename the downloaded folder or video, or
+to move it into another folder.
+PikPak performs the transfer, so closing the settings page or the app does not stop it; reopening the
+settings shows the current progress again. Finished entries are cleared automatically after a day.
 
 ### Catalog options
 

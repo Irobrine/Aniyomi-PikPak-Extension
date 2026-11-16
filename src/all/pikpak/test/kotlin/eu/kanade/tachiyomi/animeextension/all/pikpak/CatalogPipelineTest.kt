@@ -442,6 +442,10 @@ class DirectoryAnalysisTest {
             "Collection Show A S01",
             FilmNameParser.seasonDisplayTitle("Collection", "Show A - Season 1"),
         )
+        assertEquals(
+            "Saiunkoku S01",
+            FilmNameParser.seasonDisplayTitle("Saiunkoku", "saiunkoku (the story of saiunkoku) S01"),
+        )
     }
 }
 

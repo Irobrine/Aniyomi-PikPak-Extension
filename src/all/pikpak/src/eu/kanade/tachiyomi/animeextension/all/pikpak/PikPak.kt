@@ -57,6 +57,15 @@ abstract class PikPak :
     @Volatile
     private var directClientInstance: PikPakClient? = null
 
+    private val cloudDownloads by lazy {
+        PikPakCloudDownloads(
+            preferences = preferences,
+            clientProvider = ::directClient,
+            onFilesChanged = ::resetCatalog,
+            strings = strings,
+        )
+    }
+
     @Volatile
     private var metadataClientKey: String? = null
 
@@ -184,6 +193,18 @@ abstract class PikPak :
         } else {
             titleFromFileName(library.name).ifBlank { cleanAnimeName(library.name) }
         }
+        // Seasons with no metadata of their own keep the top-level anime's cover.
+        val parentCover = if (metadataEnabled) {
+            fetchMetadata(
+                library.name,
+                null,
+                library.classification.kind,
+                library.entries.firstOrNull()?.seriesHint,
+            )?.coverUrl?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        } ?: anime.thumbnail_url?.takeIf { it.isNotBlank() }
+
         val metadataSemaphore = Semaphore(METADATA_CONCURRENCY)
         return coroutineScope {
             seasons.map { label ->
@@ -194,7 +215,7 @@ abstract class PikPak :
                         season_number = seasonNumberFromLabel(label)
                         fetch_type = FetchType.Episodes
                         initialized = true
-                        thumbnail_url = anime.thumbnail_url
+                        thumbnail_url = parentCover
                         description = anime.description
                         genre = anime.genre
                         status = anime.status
@@ -205,7 +226,10 @@ abstract class PikPak :
                             val metadata = metadataSemaphore.withPermit {
                                 fetchMetadata(library.name, label, library.classification.kind, seriesHint)
                             }
-                            if (metadata != null) applyMetadata(this, metadata)
+                            if (metadata != null) {
+                                applyMetadata(this, metadata)
+                                if (thumbnail_url.isNullOrBlank()) thumbnail_url = parentCover
+                            }
                         }
                     }
                 }
@@ -714,6 +738,8 @@ abstract class PikPak :
         }
 
         val queries = mutableListOf<String>()
+        // Top-level anime name plus the canonical season label, e.g. "Saiunkoku S01".
+        queries += seasonDisplayTitle(base, season)
         val number = detectedSeasonNumber(season)
         when {
             isSpecialSeason(season) -> {
@@ -989,6 +1015,7 @@ abstract class PikPak :
                     input to runCatching { resolveExtraFolders(client, input).size }.getOrNull()
                 }
             },
+            cloudDownloads = cloudDownloads,
         ).setup(screen)
     }
 

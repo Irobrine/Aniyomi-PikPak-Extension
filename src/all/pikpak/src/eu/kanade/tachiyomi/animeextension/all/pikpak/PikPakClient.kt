@@ -5,9 +5,18 @@ import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakAuthResponse
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCaptchaMeta
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCaptchaRequest
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCaptchaResponse
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCloudDownloadRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCloudDownloadResponse
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCloudDownloadUrl
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakFile
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakFileListResponse
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakMoveRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakMoveTarget
 import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakRefreshRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakRenameRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakTask
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakTaskListResponse
+import eu.kanade.tachiyomi.network.await
 import keiyoushi.network.get
 import keiyoushi.network.post
 import kotlinx.coroutines.CancellationException
@@ -28,6 +37,8 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
@@ -263,14 +274,149 @@ internal class PikPakClient(
     suspend fun listMyPack(): List<PikPakFile> {
         ensureSession()
 
-        val rootFiles = listChildrenAll("")
-        val myPack = rootFiles.firstOrNull {
-            it.kind == KIND_FOLDER && it.name.equals("My Pack", ignoreCase = true)
-        } ?: throw IOException(strings.myPackMissing())
+        val myPack = myPackFolder()
 
         return listChildrenAll(myPack.id)
             .filter { it.id.isNotBlank() && it.trashed != true }
             .filter { it.phase == null || it.phase == PHASE_COMPLETE }
+    }
+
+    /** The drive root's `My Pack` folder, which is the default destination of downloads. */
+    suspend fun myPackFolder(): PikPakFile {
+        ensureSession()
+
+        return listChildrenAll("").firstOrNull {
+            it.kind == KIND_FOLDER && it.name.equals("My Pack", ignoreCase = true)
+        } ?: throw IOException(strings.myPackMissing())
+    }
+
+    /**
+     * Resolves a destination path such as `My Pack/Anime` for a cloud download. A blank or
+     * unresolvable path falls back to My Pack so a typo never loses the submitted links.
+     */
+    suspend fun downloadFolder(input: String?): PikPakFile {
+        ensureSession()
+
+        val cleaned = input.orEmpty().trim().trim('/')
+        if (cleaned.isNotBlank()) {
+            resolveFolder(cleaned)
+                ?.takeIf { it.kind == KIND_FOLDER && it.id.isNotBlank() }
+                ?.let { return it }
+        }
+        return myPackFolder()
+    }
+
+    /** Hands [url] (magnet, direct file or share link) to PikPak's offline downloader. */
+    suspend fun addCloudDownload(url: String, parentId: String): PikPakTask {
+        ensureSession()
+
+        val body = json.encodeToString(
+            PikPakCloudDownloadRequest(
+                url = PikPakCloudDownloadUrl(url),
+                parentId = parentId,
+            ),
+        ).toRequestBody(JSON_MEDIA_TYPE)
+
+        val endpoint = DRIVE_BASE.newBuilder()
+            .addPathSegment("drive")
+            .addPathSegment("v1")
+            .addPathSegment("files")
+            .build()
+
+        drivePost(endpoint, body).use { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
+                throw IOException(strings.cloudDownloadFailed(response.code, text.take(200)))
+            }
+
+            val data = runCatching { json.decodeFromString<PikPakCloudDownloadResponse>(text) }.getOrNull()
+            val task = data?.task
+            if (task == null || (task.id.isBlank() && task.fileId.isNullOrBlank())) {
+                val reason = data?.errorDescription?.takeIf { it.isNotBlank() }
+                    ?: data?.error?.takeIf { it.isNotBlank() }
+                    ?: "unreadable response"
+                throw IOException(strings.cloudDownloadFailed(response.code, reason))
+            }
+            return task
+        }
+    }
+
+    /** Recent offline download tasks of the account; older history is not needed for progress. */
+    suspend fun listCloudTasks(): List<PikPakTask> {
+        val tasks = mutableListOf<PikPakTask>()
+        var pageToken = ""
+        var pageCount = 0
+        do {
+            if (++pageCount > MAX_TASK_PAGES) break
+            val data = listTasks(pageToken)
+            data.error?.let { throw IOException(strings.listError("$it ${data.errorDescription.orEmpty()}")) }
+            tasks += data.tasks.orEmpty()
+            pageToken = data.nextPageToken.orEmpty()
+        } while (pageToken.isNotEmpty())
+        return tasks
+    }
+
+    /** Current phase of a file, used when a finished task is no longer listed by PikPak. */
+    suspend fun filePhase(fileId: String): String? = try {
+        getFile(fileId).phase
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Renames a finished download (a folder for multi-file torrents, or a single file). */
+    suspend fun renameFile(fileId: String, name: String): String {
+        ensureSession()
+
+        val cleaned = name.trim()
+        if (cleaned.isBlank()) throw IOException(strings.renameFailed("empty name"))
+
+        val body = json.encodeToString(PikPakRenameRequest(cleaned)).toRequestBody(JSON_MEDIA_TYPE)
+        val endpoint = DRIVE_BASE.newBuilder()
+            .addPathSegment("drive")
+            .addPathSegment("v1")
+            .addPathSegment("files")
+            .addPathSegment(fileId)
+            .build()
+
+        drivePatch(endpoint, body).use { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
+                throw IOException(strings.renameFailed(text.take(200)))
+            }
+
+            val file = runCatching { json.decodeFromString<PikPakFile>(text) }.getOrNull()
+            val error = file?.errorDescription?.takeIf { it.isNotBlank() }
+                ?: file?.error?.takeIf { it.isNotBlank() }
+            if (error != null) throw IOException(strings.renameFailed(error))
+            return file?.name?.takeIf { it.isNotBlank() } ?: cleaned
+        }
+    }
+
+    /** Moves a finished download (a folder or a single file) into [parentId]. */
+    suspend fun moveFile(fileId: String, parentId: String) {
+        ensureSession()
+
+        val body = json.encodeToString(
+            PikPakMoveRequest(ids = listOf(fileId), to = PikPakMoveTarget(parentId)),
+        ).toRequestBody(JSON_MEDIA_TYPE)
+        val endpoint = DRIVE_BASE.newBuilder()
+            .addPathSegment("drive")
+            .addPathSegment("v1")
+            .addPathSegment("files:batchMove")
+            .build()
+
+        drivePost(endpoint, body).use { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
+                throw IOException(strings.moveFailed(text.take(200)))
+            }
+
+            val error = runCatching { json.decodeFromString<PikPakFile>(text) }.getOrNull()
+                ?.let { it.errorDescription?.takeIf { d -> d.isNotBlank() } ?: it.error?.takeIf { e -> e.isNotBlank() } }
+            if (error != null) throw IOException(strings.moveFailed(error))
+        }
     }
 
     suspend fun list(itemId: String): Listing {
@@ -537,25 +683,65 @@ internal class PikPakClient(
         }
     }
 
+    private suspend fun listTasks(pageToken: String): PikPakTaskListResponse {
+        val url = DRIVE_BASE.newBuilder()
+            .addPathSegment("drive")
+            .addPathSegment("v1")
+            .addPathSegment("tasks")
+            .addQueryParameter("type", "offline")
+            .addQueryParameter("thumbnail_size", "SIZE_SMALL")
+            .addQueryParameter("limit", "100")
+            .addQueryParameter("with", "reference_resource")
+            .addQueryParameter("filters", TASK_FILTERS_JSON)
+            .apply {
+                if (pageToken.isNotBlank()) addQueryParameter("page_token", pageToken)
+            }
+            .build()
+
+        driveGet(url).use { response ->
+            val body = response.body.string()
+            if (!response.isSuccessful) {
+                throw IOException(strings.filesHttp(response.code, body.take(200)))
+            }
+            return json.decodeFromString<PikPakTaskListResponse>(body)
+        }
+    }
+
     // ============================== Requests ==============================
 
     /**
      * Authenticated drive GET with one token refresh on 401/403 and exponential backoff for
      * rate limiting (429) and server errors (5xx).
      */
-    private suspend fun driveGet(url: HttpUrl): Response {
-        val action = "GET:${url.encodedPath}"
+    private suspend fun driveGet(url: HttpUrl): Response = driveRequest("GET:${url.encodedPath}") { action ->
+        client.get(url, driveHeaders(action), CacheControl.FORCE_NETWORK, ensureSuccess = false)
+    }
+
+    /** Authenticated drive POST, with the same retry and refresh behaviour as [driveGet]. */
+    private suspend fun drivePost(url: HttpUrl, body: RequestBody): Response = driveRequest("POST:${url.encodedPath}") { action ->
+        client.post(url, driveHeaders(action), body, ensureSuccess = false)
+    }
+
+    /** Authenticated drive PATCH, with the same retry and refresh behaviour as [driveGet]. */
+    private suspend fun drivePatch(url: HttpUrl, body: RequestBody): Response = driveRequest("PATCH:${url.encodedPath}") { action ->
+        val request = Request.Builder()
+            .url(url)
+            .headers(driveHeaders(action))
+            .patch(body)
+            .build()
+        client.newCall(request).await()
+    }
+
+    private suspend fun driveRequest(
+        action: String,
+        send: suspend (action: String) -> Response,
+    ): Response {
         var refreshed = false
         var attempt = 0
 
         while (true) {
             ensureSession()
-            val response = client.get(
-                url,
-                driveHeaders(action),
-                CacheControl.FORCE_NETWORK,
-                ensureSuccess = false,
-            )
+            val response = send(action)
             val code = response.code
 
             if (code == 401 || code == 403) {
@@ -702,6 +888,7 @@ internal class PikPakClient(
         private const val PHASE_COMPLETE = "PHASE_TYPE_COMPLETE"
         private const val MAX_DEPTH = 32
         private const val MAX_PAGES = 200
+        private const val MAX_TASK_PAGES = 3
         private const val TREE_CONCURRENCY = 4
         private const val TREE_FANOUT = 32
 
@@ -718,6 +905,9 @@ internal class PikPakClient(
 
         private const val FILTERS_JSON =
             """{"trashed":{"eq":false},"phase":{"eq":"PHASE_TYPE_COMPLETE"}}"""
+
+        private const val TASK_FILTERS_JSON =
+            """{"phase":{"in":"PHASE_TYPE_PENDING,PHASE_TYPE_RUNNING,PHASE_TYPE_COMPLETE,PHASE_TYPE_ERROR"}}"""
 
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private val ID_HINT_REGEX = Regex("^[A-Za-z0-9_-]{16,}$")

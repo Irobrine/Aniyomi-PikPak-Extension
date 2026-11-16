@@ -5,6 +5,8 @@
     <string name="pikpak_login_summary_logged_in">Logged in. Tap here to replace the saved PikPak session.</string>
     <string name="pikpak_logout_title">Log out of PikPak</string>
     <string name="pikpak_logout_summary">Forget the saved session and sign out of the PikPak page. Your files are not touched.</string>
+    <string name="pikpak_logout_confirm_message">Forget the saved PikPak session? Your files are not touched.</string>
+    <string name="pikpak_logout_action">Log out</string>
     <string name="pikpak_status_title">Session</string>
     <string name="pikpak_status_logged_out">Not logged in.</string>
     <string name="pikpak_status_logged_in">Logged in.</string>
@@ -14,9 +16,9 @@
     <string name="pikpak_info_folder_title">Folder structure</string>
     <string name="pikpak_info_folder_summary">Each folder directly inside My Pack is one anime. Season, part, cour, special and series sub-folders become seasons; disc, quality and subtitle folders are ignored. A folder without season folders shows its episodes directly.</string>
     <string name="pikpak_info_season_title">Season folders</string>
-    <string name="pikpak_info_season_summary">Use names like \"Season 1\", \"S01\", \"第2季\" or \"Temporada 2\" to get \"Anime S01\". Parts and cours are kept, and labels such as \"Dear Sister\" become \"Anime Dear Sister\". Disc and release-group folders do not create seasons.</string>
+    <string name="pikpak_info_season_summary">Sub-folders inside an anime folder become seasons, and each season name is matched against the API separately.</string>
     <string name="pikpak_info_episode_title">Episode files</string>
-    <string name="pikpak_info_episode_summary">Numbers in S01E01, 1x01, EP01, E09, \"- 09\", [09], 第01话 and \"Episode 9\" are detected, including ranges and decimals. Years, resolutions, codecs, bit depths and audio channels are ignored. Files without a number are numbered in name order.</string>
+    <string name="pikpak_info_episode_summary">Episode numbers are read from file names. Files without a number are numbered in name order.</string>
     <string name="pikpak_info_metadata_title">Metadata</string>
     <string name="pikpak_info_metadata_summary">Anime folder names are matched against AniList for cover, studio, characters, recommendations and related entries. Add a TMDB API key for non-anime movies and TV.</string>
 
@@ -38,6 +40,35 @@
     <string name="pikpak_metadata_summary">Use AniList for covers, studio, characters and suggestions. TMDB is used as fallback.</string>
     <string name="pikpak_tmdb_title">TMDB API key (optional)</string>
     <string name="pikpak_tmdb_summary">Used when AniList has no match, especially for movies and TV shows.</string>
+
+    <string name="pikpak_cloud_title">Add Cloud Download</string>
+    <string name="pikpak_cloud_section">Cloud downloads</string>
+    <string name="pikpak_cloud_summary">Send magnet or video links to PikPak and follow their progress here.</string>
+    <string name="pikpak_cloud_links_label">Links</string>
+    <string name="pikpak_cloud_links_hint">One link per line</string>
+    <string name="pikpak_cloud_destination_label">Download to</string>
+    <string name="pikpak_cloud_destination_hint">My Pack</string>
+    <string name="pikpak_cloud_download">Download</string>
+    <string name="pikpak_cloud_cancel">Cancel</string>
+    <string name="pikpak_cloud_links_empty">Add at least one link.</string>
+    <string name="pikpak_cloud_queued">Adding %1$d download(s)…</string>
+    <string name="pikpak_cloud_pending">Queued</string>
+    <string name="pikpak_cloud_progress">Downloading %1$d%%</string>
+    <string name="pikpak_cloud_complete">Download complete</string>
+    <string name="pikpak_cloud_failed">Download failed</string>
+    <string name="pikpak_cloud_unknown_link">Link</string>
+    <string name="pikpak_cloud_magnet_link">Magnet link</string>
+    <string name="pikpak_cloud_download_failed">PikPak rejected the link (HTTP %1$d): %2$s</string>
+    <string name="pikpak_cloud_edit_title">Edit Download</string>
+    <string name="pikpak_cloud_edit_action">Save</string>
+    <string name="pikpak_cloud_edit_folder_label">Folder (ID or path)</string>
+    <string name="pikpak_cloud_rename_label">Name</string>
+    <string name="pikpak_cloud_rename_empty">Enter a name.</string>
+    <string name="pikpak_cloud_edited">Download updated</string>
+    <string name="pikpak_cloud_edit_failed">Could not update the download.</string>
+    <string name="pikpak_error_rename_failed">PikPak could not rename the download: %1$s</string>
+    <string name="pikpak_error_move_failed">PikPak could not move the download: %1$s</string>
+    <string name="pikpak_error_folder_missing">Folder not found: %1$s</string>
 
     <string name="pikpak_flat_folders_title">Detect flat folders</string>
     <string name="pikpak_flat_folders_summary">Probe each folder so a folder without sub-folders opens straight into episodes. Costs one request per folder when the catalog loads.</string>

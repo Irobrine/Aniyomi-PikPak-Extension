@@ -6,6 +6,8 @@ internal object PikPakPrefs {
     const val DEVICE_ID = "pikpak_device_id"
     const val EXTRA_FOLDERS = "pikpak_extra_folders"
     const val EXTRA_FOLDERS_LINES = "pikpak_extra_folders_lines"
+    const val CLOUD_DOWNLOADS = "pikpak_cloud_downloads"
+    const val CLOUD_DESTINATION = "pikpak_cloud_destination"
 
     const val ACCESS_TOKEN = "pikpak_access_token"
     const val REFRESH_TOKEN = "pikpak_refresh_token"
@@ -42,6 +44,27 @@ internal object PikPakPrefs {
         .filter { it.isNotBlank() }
         .distinct()
 
+    /** Splits the cloud download field: one link per line, blanks and repeats dropped. */
+    fun parseCloudLinks(raw: String?): List<String> = raw.orEmpty()
+        .split('\n', '\r')
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+
+    /**
+     * Readable label for a submitted link, used until PikPak reports the real file name.
+     * Magnet links expose their display name in `dn`; other links are shortened.
+     */
+    fun cloudLinkLabel(url: String): String? {
+        if (url.startsWith("magnet:", ignoreCase = true)) {
+            val name = MAGNET_NAME_REGEX.find(url)?.groupValues?.get(1) ?: return null
+            return runCatching { java.net.URLDecoder.decode(name, "UTF-8") }.getOrDefault(name)
+                .takeIf { it.isNotBlank() }
+        }
+
+        return url.substringAfter("://", url).trim().take(MAX_LINK_LABEL).takeIf { it.isNotBlank() }
+    }
+
     /** Human readable "1h 59m" style duration used by the session status row. */
     fun formatDuration(totalSeconds: Long): String {
         val seconds = totalSeconds.coerceAtLeast(0)
@@ -56,6 +79,8 @@ internal object PikPakPrefs {
 
     private val REFRESH_TOKEN_JSON_REGEX = Regex("\"refresh_token\"\\s*:\\s*\"([^\"]+)\"")
     private const val REFRESH_TOKEN_PARAM = "refresh_token="
+    private const val MAX_LINK_LABEL = 80
+    private val MAGNET_NAME_REGEX = Regex("[?&]dn=([^&]+)")
 
     /**
      * Decodes a value read from page storage, which may be JSON, URL-encoded JSON, or plain text.

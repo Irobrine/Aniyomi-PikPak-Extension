@@ -1,5 +1,11 @@
 package eu.kanade.tachiyomi.animeextension.all.pikpak
 
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCloudDownloadRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakCloudDownloadUrl
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakMoveRequest
+import eu.kanade.tachiyomi.animeextension.all.pikpak.dto.PikPakMoveTarget
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -217,8 +223,38 @@ class CatalogFiltersTest {
     }
 }
 
-class PikPakPrefsTest {
+class PikPakCloudDownloadRequestTest {
+    private val json = Json { encodeDefaults = true }
 
+    @Test
+    fun `sends the chosen folder with an empty folder type`() {
+        val body = json.encodeToString(
+            PikPakCloudDownloadRequest(
+                url = PikPakCloudDownloadUrl("magnet:?xt=urn:btih:abc"),
+                parentId = "folder-id",
+            ),
+        )
+
+        assertTrue(body.contains("\"parent_id\":\"folder-id\""))
+        assertTrue(body.contains("\"folder_type\":\"\""))
+        assertFalse(body.contains("DOWNLOAD"))
+    }
+
+    @Test
+    fun `sends the move target folder with the download id`() {
+        val body = json.encodeToString(
+            PikPakMoveRequest(
+                ids = listOf("file-id"),
+                to = PikPakMoveTarget(parentId = "target-folder"),
+            ),
+        )
+
+        assertTrue(body.contains("\"ids\":[\"file-id\"]"))
+        assertTrue(body.contains("\"to\":{\"parent_id\":\"target-folder\"}"))
+    }
+}
+
+class PikPakPrefsTest {
     @Test
     fun `parses newline and semicolon separated folders`() {
         assertEquals(
@@ -274,6 +310,29 @@ class PikPakPrefsTest {
     fun `decodes url encoded storage values`() {
         assertEquals("""{"refresh_token":"abc"}""", PikPakPrefs.decodeWebValue("%7B%22refresh_token%22%3A%22abc%22%7D"))
         assertEquals("plain", PikPakPrefs.decodeWebValue("plain"))
+    }
+
+    @Test
+    fun `splits cloud links one per line`() {
+        assertEquals(
+            listOf("magnet:?xt=urn:btih:abc", "https://youtu.be/xyz", "https://example.com/a.mp4"),
+            PikPakPrefs.parseCloudLinks(
+                "magnet:?xt=urn:btih:abc\n\n https://youtu.be/xyz \r\nhttps://example.com/a.mp4\n" +
+                    "magnet:?xt=urn:btih:abc",
+            ),
+        )
+        assertTrue(PikPakPrefs.parseCloudLinks(null).isEmpty())
+        assertTrue(PikPakPrefs.parseCloudLinks("  \n ").isEmpty())
+    }
+
+    @Test
+    fun `labels cloud links until pikpak reports a name`() {
+        assertEquals(
+            "Show 01",
+            PikPakPrefs.cloudLinkLabel("magnet:?xt=urn:btih:abc&dn=Show%2001"),
+        )
+        assertNull(PikPakPrefs.cloudLinkLabel("magnet:?xt=urn:btih:abc"))
+        assertEquals("youtu.be/xyz", PikPakPrefs.cloudLinkLabel("https://youtu.be/xyz"))
     }
 }
 
